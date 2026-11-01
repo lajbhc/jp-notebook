@@ -93,7 +93,10 @@ UPLOAD_PAGE = """<!doctype html>
     <button id="retry">重新上传这张</button>
   </div>
 <script>
-  var status = document.getElementById('status');
+// 整个脚本塞进 IIFE：顶层 var 会和 window 上的同名属性（window.status 等）
+// 撞车，写进去就变成字符串，后面 .style 直接 undefined。
+(function () {
+  var statusBox = document.getElementById('status');
   var preview = document.getElementById('preview');
   var fileinfo = document.getElementById('fileinfo');
   var retry = document.getElementById('retry');
@@ -101,9 +104,9 @@ UPLOAD_PAGE = """<!doctype html>
   var uploading = false;
 
   function show(kind, text) {
-    status.className = kind;
-    status.textContent = text;
-    status.style.display = 'block';
+    statusBox.className = kind;
+    statusBox.textContent = text;
+    statusBox.style.display = 'block';
   }
 
   // 打点：手机上什么都不显示时，电脑端 data/logs/upload.log 里还能看到它走到哪一步
@@ -249,6 +252,7 @@ UPLOAD_PAGE = """<!doctype html>
     if (lastFile) { upload(lastFile); } else { show('err', '还没有选过照片。'); }
   });
   ping('page-load');
+})();
 </script>
 </body>
 </html>

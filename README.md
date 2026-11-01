@@ -146,8 +146,15 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 ```
 
 只有 `page-load` 没有 `pick` → 手机的浏览器没把照片交回页面（微信/QQ 内置浏览器常见），
-换 Chrome 或走「从相册里选一张」；有 `pick` 没有 `POST` → 页面脚本出错；
-有 `POST ... -> 415/400` → 服务端明确拒了，日志里带着原因。
+换 Chrome 或走「从相册里选一张」；有 `pick` 没有 `POST` → 页面脚本出错，日志里会出现
+`e=js-error ...`，把后面那段错误原文搜一下基本就知道是哪一行；有 `POST ... -> 415/400` →
+服务端明确拒了，日志里带着原因。
+
+> 踩过的坑：页面脚本早期写了 `var status = document.getElementById('status')`，
+> 撞上浏览器内置的 `window.status`（它是个字符串），于是 `status.style` 变成 undefined，
+> 每次选完图第一行就抛异常、上传请求根本没发出去，而电脑端只看得到"没收到"。
+> 现在整段脚本包在 IIFE 里、变量叫 `statusBox`，并且有 `scripts/check_upload_page.py`
+> 用 Node 跑一遍这几条路径。
 
 传图限制：只收 JPG / PNG / WEBP / BMP / GIF / TIFF，单张上限 15MB。
 传 PDF、传超大图、传坏文件都会被挡住，手机页面和桌面端都会给出原因，不会静默失败。
@@ -229,7 +236,11 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 .\venv\Scripts\python.exe scripts\verify_library_ui.py    # 阶段 4：offscreen 点一遍词库页与编辑框
 .\venv\Scripts\python.exe scripts\verify_upload.py        # 阶段 5：真起 HTTP 服务，测收图与各种失败
 .\venv\Scripts\python.exe scripts\verify_upload_ui.py     # 阶段 5：offscreen 点一遍手机上传页
+.\venv\Scripts\python.exe scripts\check_upload_page.py    # 阶段 5：用 node 跑手机页面里的 JS（缺 node 时跳过）
 ```
+
+最后那条是给手机上传页里那段 JS 用的：它只在手机浏览器里执行，Python 的测试看不见它。
+没装 Node 会自动跳过，不影响其它验收。
 
 ## 安全约定
 
