@@ -35,6 +35,7 @@ from app import models
 from app.services import entry_service
 from app.services.entry_service import EntryValidationError, SaveFailed
 from app.services.errors import RecognitionError
+from app.ui import entry_fields
 from app.ui.recognition_worker import RecognitionWorker
 
 _IMAGE_FILTER = "图片 (*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tif *.tiff)"
@@ -48,17 +49,9 @@ _BANNER_STYLES = {
 }
 
 # (字段名, 中文标签, 只属于哪一类；None 表示两类共用)
-_FIELDS: tuple[tuple[str, str, str | None], ...] = (
-    ("word", "词形", models.ENTRY_TYPE_WORD),
-    ("reading", "读音", models.ENTRY_TYPE_WORD),
-    ("part_of_speech", "词性", models.ENTRY_TYPE_WORD),
-    ("grammar_point", "语法点", models.ENTRY_TYPE_GRAMMAR),
-    ("connection", "接续", models.ENTRY_TYPE_GRAMMAR),
-    ("meaning", "释义", None),
-    ("example", "例句", None),
-    ("example_cn", "例句翻译", None),
-    ("error_reason", "错因", None),
-    ("note", "备注", None),
+# 字段清单只有 entry_fields.FIELDS 一份，编辑对话框用同一份，避免标签漂移。
+_FIELDS: tuple[tuple[str, str, str | None], ...] = tuple(
+    (spec.name, spec.label, spec.only_type) for spec in entry_fields.FIELDS
 )
 
 

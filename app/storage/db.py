@@ -97,6 +97,12 @@ def connect(db_path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
         conn.execute("PRAGMA foreign_keys = ON")
         yield conn
         conn.commit()
+    except sqlite3.Error as exc:
+        # 把 sqlite3 的原始异常统一包成 StorageError：上层（services / ui）
+        # 只需认识一种异常，不用 import sqlite3，也不会漏掉"表不存在""库损坏"
+        # 这类只有运行期才会暴露的错误。
+        conn.rollback()
+        raise StorageError(f"数据库操作失败 {path}: {exc}") from exc
     except Exception:
         conn.rollback()
         raise

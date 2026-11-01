@@ -1,7 +1,7 @@
 """主窗口：左侧导航 + 右侧页面容器。
 
-现在只有「录入」是真页面，其余三个先放占位说明——宁可显示"这一页还没做"，
-也不做一个看着能点、点了没反应的假界面。
+「录入」「词库」已经是真页面，打卡与手机上传先放占位说明——宁可显示
+"这一页还没做"，也不做一个看着能点、点了没反应的假界面。
 
 用 QStackedWidget + QListWidget 而不是 QTabWidget：后面阶段 5 的二维码、阶段 6 的
 日历都要占满整块区域，左侧导航比顶部标签更省空间。
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from app import config
 from app.ui.capture_page import CapturePage
+from app.ui.library_page import LibraryPage
 
 WINDOW_TITLE = "日语错题本"
 WINDOW_SIZE = (1000, 720)
@@ -111,10 +112,11 @@ class MainWindow(QMainWindow):
         self.capture_page = CapturePage()
         self.capture_page.entry_saved.connect(self._on_entry_saved)
 
+        self.library_page = LibraryPage()
+        self.library_page.message.connect(self._show_status)
+
         self._stack.addWidget(self.capture_page)
-        self._stack.addWidget(
-            _placeholder_page("词库", "阶段 4 接入：列表、关键词搜索、类型/日期筛选、翻页、编辑与删除。")
-        )
+        self._stack.addWidget(self.library_page)
         self._stack.addWidget(
             _placeholder_page("打卡", "阶段 6 接入：每天点一次「今日学习完成」，显示连续天数与月历。")
         )
@@ -127,11 +129,17 @@ class MainWindow(QMainWindow):
     def _on_nav_changed(self, index: int) -> None:
         self._stack.setCurrentIndex(index)
         self.setWindowTitle(f"{WINDOW_TITLE} · {self._nav.currentItem().text()}")
+        # 切到词库时重查一次：别的页面可能刚存/删过记录
+        if index == 1:
+            self.library_page.reload()
 
     def _on_entry_saved(self, entry) -> None:
-        self.statusBar().showMessage(
-            f"已保存：{entry.title}（id={entry.id}）", 5000
-        )
+        self._show_status(f"已保存：{entry.title}（id={entry.id}）")
+        # 新记录按创建时间倒序，会落在第一页最前面，所以回到第一页
+        self.library_page.reload(reset_page=True)
+
+    def _show_status(self, text: str) -> None:
+        self.statusBar().showMessage(text, 5000)
 
 
 __all__ = ["MainWindow"]

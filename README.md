@@ -28,8 +28,13 @@ jp-notebook/
       main_window.py      # 主窗口：左侧导航 + 页面容器
       capture_page.py     # 录入页：选图/预览/识别/校正/保存
       recognition_worker.py  # 把识别放到子线程，避免界面卡死
+      library_page.py     # 词库页：筛选 + 翻页 + 编辑/删除入口
+      entry_table_model.py   # 表格模型：把一条记录摊成 6 列
+      entry_edit_dialog.py   # 编辑对话框（带原图预览）
+      entry_fields.py     # 10 个字段的定义，录入页与编辑框共用
     services/    # 识别、打卡等业务门面
       entry_service.py    # 录入门面：图片落盘、表单校验、保存
+      library_service.py  # 词库门面：查询/筛选/翻页/统计/删除
       recognizer.py       # 多模态识别
       errors.py           # 统一错误模型
     storage/     # SQLite 读写封装（db.py 建表，repository.py 增删改查）
@@ -106,6 +111,15 @@ copy .env.example .env
 识别失败不会丢东西：红色提示条会说明原因，表单照样能手动填完再保存。
 保存时原图会被复制进 `data/uploads/<日期>/`，库里只存相对路径。
 
+录入之后都在「词库」页里管：
+
+1. 顶部关键词框搜全部字段（词形、读音、释义、例句、错因、备注都能搜到）
+2. 类型下拉只看生词或只看语法；勾「按日期筛选」才按创建日期过滤
+3. 每页 20 / 50 / 100 条切换，表格按创建时间倒序（最新在最上）
+4. 双击某行或点「编辑」打开对话框改，左上角能改类型，右边能看原图
+5. 点「删除」（或选中后按 Delete 键）会弹确认框，删掉的是数据库记录，
+   原图仍留在 `data/uploads/` 里
+
 ### 4. 先用探针确认接口能用
 
 换 Key、换模型、换服务商之后，**先跑探针再开界面**，它会把 HTTP 状态码和
@@ -163,7 +177,7 @@ copy .env.example .env
 | 1 | 存储层（SQLite） | ✅ 完成 |
 | 2 | 识别服务 + 接口探针 | ✅ 完成 |
 | 3 | 录入页（上传 → 校正 → 保存） | ✅ 完成 |
-| 4 | 词库页（列表 / 搜索 / 编辑 / 删除） | ⬜ |
+| 4 | 词库页（列表 / 搜索 / 编辑 / 删除） | ✅ 完成 |
 | 5 | 手机局域网上传 | ⬜ |
 | 6 | 每日打卡 | ⬜ |
 | 7 | 托盘提醒 | ⬜ |
@@ -178,6 +192,8 @@ copy .env.example .env
 .\venv\Scripts\python.exe scripts\verify_recognition.py   # 阶段 2：识别解析与各种错误分支
 .\venv\Scripts\python.exe scripts\verify_capture.py       # 阶段 3：图片落盘、表单校验、保存
 .\venv\Scripts\python.exe scripts\verify_ui.py            # 阶段 3：offscreen 模式跑真实窗口与点击
+.\venv\Scripts\python.exe scripts\verify_library.py       # 阶段 4：搜索/筛选/翻页/统计/删除
+.\venv\Scripts\python.exe scripts\verify_library_ui.py    # 阶段 4：offscreen 点一遍词库页与编辑框
 ```
 
 ## 安全约定
