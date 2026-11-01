@@ -257,6 +257,10 @@ class CapturePage(QWidget):
             self._editors["word"].setPlaceholderText("如：食べる")
 
     # ------------------------------------------------------------- 选图
+    def load_image(self, path: str | Path) -> None:
+        """给外部页面用的入口（手机上传页、以后的剪贴板导入）。"""
+        self._load_image(str(path))
+
     def _pick_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择图片", str(Path.home()), _IMAGE_FILTER)
         if path:

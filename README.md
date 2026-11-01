@@ -32,9 +32,11 @@ jp-notebook/
       entry_table_model.py   # 表格模型：把一条记录摊成 6 列
       entry_edit_dialog.py   # 编辑对话框（带原图预览）
       entry_fields.py     # 10 个字段的定义，录入页与编辑框共用
+      upload_page.py      # 手机上传页：地址、二维码、收到的图、一键送去录入
     services/    # 识别、打卡等业务门面
       entry_service.py    # 录入门面：图片落盘、表单校验、保存
       library_service.py  # 词库门面：查询/筛选/翻页/统计/删除
+      upload_service.py   # 上传门面：启停服务、本机 IP、收图落盘、收件箱
       recognizer.py       # 多模态识别
       errors.py           # 统一错误模型
     storage/     # SQLite 读写封装（db.py 建表，repository.py 增删改查）
@@ -43,7 +45,9 @@ jp-notebook/
     config.py    # 路径、环境变量、模型名
     main.py      # 桌面端入口
   server/        # 手机局域网上传服务
-  scripts/       # 验证脚本（存储 / 识别 / 录入链路 / 界面）
+    upload_server.py   # FastAPI 应用 + 后台线程跑 uvicorn（不含识别、不碰数据库）
+    queue.py           # 线程安全收件箱（HTTP 线程放，界面线程取）
+  scripts/       # 验证脚本（存储 / 识别 / 录入链路 / 界面 / 手机上传）
   data/          # 运行时生成：app.db、uploads/、logs/（不入库）
   venv/          # 虚拟环境（不入库）
 ```
@@ -120,6 +124,21 @@ copy .env.example .env
 5. 点「删除」（或选中后按 Delete 键）会弹确认框，删掉的是数据库记录，
    原图仍留在 `data/uploads/` 里
 
+手机拍的那张纸上的题，用手机传进来（比电脑端找根数据线快）：
+
+1. 左侧点「手机上传」，页面一进来服务就自己起了，二维码旁边有地址
+2. 手机连**同一个 Wi-Fi**，扫码打开页面（或者把地址手敲进手机浏览器）
+3. 点页面上的「选择图片 / 拍照」，传完手机页面会显示"已收到"
+4. 桌面端 1 秒内出现在右边的列表里，点「用这张图去录入」就跳到录入页
+5. 用完点「停止服务」，端口立刻释放；不点也行，关窗口时也会自动停
+
+手机打不开页面时按这个顺序查：两台设备在不在同一个 Wi-Fi（不是手机流量）→
+Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许」）→
+`UPLOAD_PORT` 有没有被别的程序占用（换一个再启动）。
+
+传图限制：只收 JPG / PNG / WEBP / BMP / GIF / TIFF，单张上限 15MB。
+传 PDF、传超大图、传坏文件都会被挡住，手机页面和桌面端都会给出原因，不会静默失败。
+
 ### 4. 先用探针确认接口能用
 
 换 Key、换模型、换服务商之后，**先跑探针再开界面**，它会把 HTTP 状态码和
@@ -178,7 +197,7 @@ copy .env.example .env
 | 2 | 识别服务 + 接口探针 | ✅ 完成 |
 | 3 | 录入页（上传 → 校正 → 保存） | ✅ 完成 |
 | 4 | 词库页（列表 / 搜索 / 编辑 / 删除） | ✅ 完成 |
-| 5 | 手机局域网上传 | ⬜ |
+| 5 | 手机局域网上传 | ✅ 完成 |
 | 6 | 每日打卡 | ⬜ |
 | 7 | 托盘提醒 | ⬜ |
 | 8 | 收尾（日志 / 测试 / 文档） | ⬜ |
@@ -194,6 +213,8 @@ copy .env.example .env
 .\venv\Scripts\python.exe scripts\verify_ui.py            # 阶段 3：offscreen 模式跑真实窗口与点击
 .\venv\Scripts\python.exe scripts\verify_library.py       # 阶段 4：搜索/筛选/翻页/统计/删除
 .\venv\Scripts\python.exe scripts\verify_library_ui.py    # 阶段 4：offscreen 点一遍词库页与编辑框
+.\venv\Scripts\python.exe scripts\verify_upload.py        # 阶段 5：真起 HTTP 服务，测收图与各种失败
+.\venv\Scripts\python.exe scripts\verify_upload_ui.py     # 阶段 5：offscreen 点一遍手机上传页
 ```
 
 ## 安全约定

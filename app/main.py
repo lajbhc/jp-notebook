@@ -11,6 +11,7 @@ import sys
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app import config
+from app.services import upload_service
 from app.storage.db import StorageError, init_db
 from app.ui.main_window import WINDOW_TITLE, MainWindow
 
@@ -20,6 +21,8 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName(WINDOW_TITLE)
+    # 退出时把上传服务停掉，端口立刻释放，下次启动不会"端口被占"
+    app.aboutToQuit.connect(upload_service.stop_server)
 
     try:
         init_db()
