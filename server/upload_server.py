@@ -87,9 +87,9 @@ UPLOAD_PAGE = """<!doctype html>
     <label class="picker alt" for="album">或者从相册里选一张</label>
     <input id="album" type="file" accept="image/*">
     <div class="hint">支持 JPG / PNG 等常见图片，单张不超过 15MB<br>iPhone 的 HEIC 请先在相册里截个图再传</div>
-    <img id="preview" alt="预览">
     <div id="fileinfo"></div>
     <div id="status"></div>
+    <img id="preview" alt="预览">
     <button id="retry">重新上传这张</button>
   </div>
 <script>
@@ -114,9 +114,12 @@ UPLOAD_PAGE = """<!doctype html>
     } catch (e) { /* 打点失败不影响上传 */ }
   }
 
-  window.onerror = function (msg) {
-    ping('js-error');
-    show('err', '页面出错了：' + msg + '。可以刷新重试，或换个浏览器。');
+  window.onerror = function (msg, src, line, col) {
+    uploading = false;
+    ping('js-error ' + msg + ' @' + line + ':' + col);
+    show('err', '页面脚本出错：' + msg + '。换成 Chrome 打开本页再试。');
+    retry.style.display = 'block';
+    return false;
   };
 
   function human(bytes) {
@@ -145,56 +148,99 @@ UPLOAD_PAGE = """<!doctype html>
     upload(file);
   }
 
+  function fail(text) {
+    uploading = false;
+    show('err', text);
+    retry.style.display = 'block';
+  }
+
+  function succeed(size) {
+    uploading = false;
+    show('ok', '已收到（' + human(size) + '），回电脑上看吧。');
+    retry.style.display = 'none';
+  }
+
   function upload(file) {
     if (uploading) { return; }
     uploading = true;
-    ping('upload-start');
-    show('busy', '正在上传… 0%');
+    retry.style.display = 'none';
+    show('busy', '正在上传…');
+    ping('upload-start ' + human(file.size));
 
     var form = new FormData();
     form.append('file', file, file.name || 'photo.jpg');
 
+    // 有些安卓 WebView（微信/QQ 内置浏览器）的 XMLHttpRequest 是残的，
+    // 建对象能过、碰 upload 就抛异常。这里兜住，抛了立刻换 fetch 再试一次。
+    try {
+      xhrUpload(file, form);
+    } catch (err) {
+      ping('xhr-broken ' + ((err && err.message) ? err.message : err));
+      fetchUpload(file, form);
+    }
+  }
+
+  function xhrUpload(file, form) {
     var xhr = new XMLHttpRequest();
     xhr.open('POST', '/upload', true);
     xhr.timeout = 60000;
-
-    xhr.upload.onprogress = function (e) {
-      if (e.lengthComputable && e.total > 0) {
-        show('busy', '正在上传… ' + Math.round(e.loaded / e.total * 100) + '%');
-      }
-    };
+    if (xhr.upload) {
+      xhr.upload.onprogress = function (e) {
+        if (e.lengthComputable && e.total > 0) {
+          show('busy', '正在上传… ' + Math.round(e.loaded / e.total * 100) + '%');
+        }
+      };
+    }
     xhr.onload = function () {
-      uploading = false;
       var data = null;
       try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
       ping('upload-done ' + xhr.status);
       if (xhr.status === 200 && data && data.ok) {
-        show('ok', '已收到（' + human(file.size) + '），回电脑上看吧。');
-        retry.style.display = 'none';
+        succeed(file.size);
       } else {
-        show('err', (data && data.message) ? data.message : ('服务器返回 ' + xhr.status));
-        retry.style.display = 'block';
+        fail((data && data.message) ? data.message : ('服务器返回 ' + xhr.status));
       }
     };
     xhr.onerror = function () {
-      uploading = false;
       ping('upload-neterror');
-      show('err', '连不上电脑（网络错误）。确认手机热点还开着、电脑上的上传服务还开着，然后点下面的按钮重试。');
-      retry.style.display = 'block';
+      fail('连不上电脑（网络错误）。确认手机热点还开着、电脑上的上传服务还开着，然后点「重新上传这张」。');
     };
     xhr.ontimeout = function () {
-      uploading = false;
       ping('upload-timeout');
-      show('err', '上传超时（60 秒没传完）。图片可能太大，试试图库里的截图，或点下面重试。');
-      retry.style.display = 'block';
+      fail('上传超时（60 秒没传完）。图片可能太大，试试先在相册里裁小一点再传。');
     };
     xhr.onabort = function () {
-      uploading = false;
       ping('upload-abort');
-      show('err', '上传被中断了，点下面重试。');
-      retry.style.display = 'block';
+      fail('上传被中断了，点「重新上传这张」。');
     };
     xhr.send(form);
+    ping('upload-sent');
+  }
+
+  function fetchUpload(file, form) {
+    if (!window.fetch) {
+      fail('这台手机的浏览器太旧，没法上传。请用 Chrome 打开本页，或把照片用微信发到电脑。');
+      return;
+    }
+    ping('fetch-fallback');
+    fetch('/upload', { method: 'POST', body: form })
+      .then(function (resp) {
+        return resp.text().then(function (text) { return { status: resp.status, text: text }; });
+      })
+      .then(function (res) {
+        var data = null;
+        try { data = JSON.parse(res.text); } catch (e) { data = null; }
+        ping('upload-done ' + res.status);
+        if (res.status === 200 && data && data.ok) {
+          succeed(file.size);
+        } else {
+          fail((data && data.message) ? data.message : ('服务器返回 ' + res.status));
+        }
+      })
+      .catch(function (err) {
+        ping('upload-fetchfail ' + ((err && err.message) ? err.message : err));
+        fail('连不上电脑：' + ((err && err.message) ? err.message : err));
+      });
   }
 
   document.getElementById('camera').addEventListener('change', function () { pick(this); });

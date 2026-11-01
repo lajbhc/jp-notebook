@@ -177,6 +177,10 @@ def main() -> int:
     check("上传失败可以点按钮重试", 'id="retry"' in html)
     check("用 XHR 而不是 fetch（能看进度和超时）", "XMLHttpRequest" in html and "xhr.upload.onprogress" in html)
     check("页面会往 /ping 打点", "/ping?e=" in html)
+    check("XHR 抛异常时自动退回 fetch", "function fetchUpload" in html and "xhr-broken" in html)
+    check("脚本错误的原文也进日志", "'js-error ' + msg" in html)
+    check("提示条在预览图上面（不用滚动就能看见）",
+          html.index('id="status"') < html.index('id="preview"'))
     check("读到空文件时也有提示", "没读到照片" in html)
     check("页面里没有接口地址", config.get_settings().base_url not in html)
     check("页面里没有 API Key 变量名", "OPENAI_API_KEY" not in html)
