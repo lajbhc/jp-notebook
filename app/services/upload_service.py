@@ -164,6 +164,28 @@ def _clean_name(name: str) -> str:
     return base[:80]
 
 
+# --------------------------------------------------------------- 日志
+def log_path() -> Path:
+    """手机上传的流水账：data/logs/upload.log。"""
+    return config.LOG_DIR / "upload.log"
+
+
+def log_event(text: str) -> None:
+    """写一行日志。
+
+    手机端"点了上传但电脑没反应"时，这是唯一能看见它到底发了什么的窗口：
+    文件名、content-type、字节数、最终状态码都会落在这里。
+    日志写失败（磁盘满、目录被占）不能反过来把上传搞挂，所以整体吞掉。
+    """
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        config.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with log_path().open("a", encoding="utf-8") as fp:
+            fp.write(f"{stamp} {text}\n")
+    except OSError:
+        pass
+
+
 # --------------------------------------------------------------- 启停
 def start_server(
     port: int | None = None,
@@ -186,14 +208,17 @@ def start_server(
         on_receive=save_received,
         host=host,
         port=target,
+        on_event=log_event,
     )
     try:
         server.start()
     except UploadServerError as exc:
+        log_event(f"启动失败 host={host} port={target} {exc.detail or exc.user_message}")
         raise UploadFailed(exc.user_message, exc.detail) from exc
 
     _server = server
     _server_port = server.port
+    log_event(f"上传服务已启动 http://{lan_ip()}:{server.port}")
     return server
 
 
@@ -203,6 +228,7 @@ def stop_server() -> None:
     _server_port = 0
     if server is not None:
         server.stop()
+        log_event("上传服务已停止")
 
 
 def is_running() -> bool:

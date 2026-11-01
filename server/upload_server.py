@@ -19,14 +19,17 @@ import time
 from typing import Any, Callable
 
 import uvicorn
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, File, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 # 手机随手拍一张 3~8MB 很常见，给到 15MB；再大就让用户在相册里裁一下。
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 
 # 分块读，避免有人传个 2GB 的文件把内存撑爆
 _CHUNK_SIZE = 256 * 1024
+
+# 这些 content-type 说明浏览器自己也说不准是什么，交给 Pillow 真读一遍再定
+_PASS_THROUGH_TYPES = frozenset({"", "application/octet-stream", "binary/octet-stream", "application/unknown"})
 
 UPLOAD_PAGE = """<!doctype html>
 <html lang="zh-CN">
@@ -60,22 +63,42 @@ UPLOAD_PAGE = """<!doctype html>
   .ok { background: #eaf7ee; color: #1f6b3a; border: 1px solid #a1d8b2; }
   .err { background: #fdecec; color: #a12622; border: 1px solid #e0a1a1; }
   .busy { background: #eef3fb; color: #1f4e79; border: 1px solid #a8c3e8; }
+  label.picker.alt {
+    border-style: solid; border-color: #d3d8e0; margin-top: 10px;
+    padding: 18px 12px; font-size: 14px;
+  }
+  #fileinfo {
+    font-size: 12px; color: #6b7280; margin-top: 10px;
+    display: none; word-break: break-all; line-height: 1.6;
+  }
+  button#retry {
+    display: none; width: 100%; margin-top: 10px; padding: 13px;
+    border: 0; border-radius: 10px; background: #2f6f9f; color: #fff; font-size: 15px;
+  }
+  button#retry:active { opacity: .8; }
 </style>
 </head>
 <body>
   <h1>日语错题本 · 拍照上传</h1>
   <p class="sub">拍一张生词卡或语法笔记，传完回到电脑上继续：电脑那边会自动收到，你再核对文字。</p>
   <div class="card">
-    <label class="picker" for="file">点这里拍照 / 从相册选择</label>
-    <input id="file" type="file" accept="image/*" capture="environment">
+    <label class="picker" for="camera">点这里拍照</label>
+    <input id="camera" type="file" accept="image/*" capture="environment">
+    <label class="picker alt" for="album">或者从相册里选一张</label>
+    <input id="album" type="file" accept="image/*">
     <div class="hint">支持 JPG / PNG 等常见图片，单张不超过 15MB<br>iPhone 的 HEIC 请先在相册里截个图再传</div>
     <img id="preview" alt="预览">
+    <div id="fileinfo"></div>
     <div id="status"></div>
+    <button id="retry">重新上传这张</button>
   </div>
 <script>
-  var input = document.getElementById('file');
   var status = document.getElementById('status');
   var preview = document.getElementById('preview');
+  var fileinfo = document.getElementById('fileinfo');
+  var retry = document.getElementById('retry');
+  var lastFile = null;
+  var uploading = false;
 
   function show(kind, text) {
     status.className = kind;
@@ -83,33 +106,103 @@ UPLOAD_PAGE = """<!doctype html>
     status.style.display = 'block';
   }
 
-  input.addEventListener('change', function () {
-    var file = input.files && input.files[0];
-    if (!file) { return; }
+  // 打点：手机上什么都不显示时，电脑端 data/logs/upload.log 里还能看到它走到哪一步
+  function ping(text) {
+    try {
+      var img = new Image(1, 1);
+      img.src = '/ping?e=' + encodeURIComponent(text) + '&t=' + (new Date()).getTime();
+    } catch (e) { /* 打点失败不影响上传 */ }
+  }
 
-    preview.src = URL.createObjectURL(file);
-    preview.style.display = 'block';
-    show('busy', '正在上传…');
+  window.onerror = function (msg) {
+    ping('js-error');
+    show('err', '页面出错了：' + msg + '。可以刷新重试，或换个浏览器。');
+  };
+
+  function human(bytes) {
+    if (bytes >= 1048576) { return (bytes / 1048576).toFixed(1) + ' MB'; }
+    if (bytes >= 1024) { return Math.round(bytes / 1024) + ' KB'; }
+    return bytes + ' B';
+  }
+
+  function pick(input) {
+    var file = input.files && input.files[0];
+    if (!file) {
+      ping('pick-empty');
+      show('err', '没读到照片。请刷新页面重试；如果点了拍照又退回来还是这样，换 Chrome 或从相册里选一张。');
+      return;
+    }
+    ping('pick ' + human(file.size) + ' ' + (file.type || 'unknown'));
+    lastFile = file;
+    retry.style.display = 'none';
+    fileinfo.textContent = '已选：' + (file.name || 'photo') + '　'
+      + human(file.size) + '　' + (file.type || '类型未知');
+    fileinfo.style.display = 'block';
+    try {
+      preview.src = URL.createObjectURL(file);
+      preview.style.display = 'block';
+    } catch (e) { /* 预览不出来也照样上传 */ }
+    upload(file);
+  }
+
+  function upload(file) {
+    if (uploading) { return; }
+    uploading = true;
+    ping('upload-start');
+    show('busy', '正在上传… 0%');
 
     var form = new FormData();
     form.append('file', file, file.name || 'photo.jpg');
 
-    fetch('/upload', { method: 'POST', body: form })
-      .then(function (resp) {
-        return resp.json().then(function (data) { return { ok: resp.ok, data: data }; });
-      })
-      .then(function (result) {
-        if (result.ok && result.data.ok) {
-          show('ok', '已收到，回电脑上看吧。');
-          input.value = '';
-        } else {
-          show('err', (result.data && result.data.message) || '上传失败，请重试。');
-        }
-      })
-      .catch(function () {
-        show('err', '连不上电脑，确认手机和电脑在同一个 Wi-Fi，且电脑上的上传服务还开着。');
-      });
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/upload', true);
+    xhr.timeout = 60000;
+
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable && e.total > 0) {
+        show('busy', '正在上传… ' + Math.round(e.loaded / e.total * 100) + '%');
+      }
+    };
+    xhr.onload = function () {
+      uploading = false;
+      var data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
+      ping('upload-done ' + xhr.status);
+      if (xhr.status === 200 && data && data.ok) {
+        show('ok', '已收到（' + human(file.size) + '），回电脑上看吧。');
+        retry.style.display = 'none';
+      } else {
+        show('err', (data && data.message) ? data.message : ('服务器返回 ' + xhr.status));
+        retry.style.display = 'block';
+      }
+    };
+    xhr.onerror = function () {
+      uploading = false;
+      ping('upload-neterror');
+      show('err', '连不上电脑（网络错误）。确认手机热点还开着、电脑上的上传服务还开着，然后点下面的按钮重试。');
+      retry.style.display = 'block';
+    };
+    xhr.ontimeout = function () {
+      uploading = false;
+      ping('upload-timeout');
+      show('err', '上传超时（60 秒没传完）。图片可能太大，试试图库里的截图，或点下面重试。');
+      retry.style.display = 'block';
+    };
+    xhr.onabort = function () {
+      uploading = false;
+      ping('upload-abort');
+      show('err', '上传被中断了，点下面重试。');
+      retry.style.display = 'block';
+    };
+    xhr.send(form);
+  }
+
+  document.getElementById('camera').addEventListener('change', function () { pick(this); });
+  document.getElementById('album').addEventListener('change', function () { pick(this); });
+  retry.addEventListener('click', function () {
+    if (lastFile) { upload(lastFile); } else { show('err', '还没有选过照片。'); }
   });
+  ping('page-load');
 </script>
 </body>
 </html>
@@ -125,32 +218,65 @@ class UploadServerError(RuntimeError):
         super().__init__(detail or user_message)
 
 
+def _acceptable_type(content_type: str) -> bool:
+    """是否允许交给 Pillow 再验一次。
+
+    手机浏览器五花八门：安卓相机常常给 `application/octet-stream`，
+    有的给空字符串。这类一律放行，让 Pillow 真正读一遍再决定，
+    只有明确是别的类型（application/pdf、text/plain…）才当场拒掉。
+    """
+    ctype = (content_type or "").lower().split(";")[0].strip()
+    if ctype.startswith("image/"):
+        return True
+    return ctype in _PASS_THROUGH_TYPES
+
+
 def create_app(
     *,
     inbox: Any,
     on_receive: Callable[[bytes, str, str], Any],
     max_bytes: int = MAX_UPLOAD_BYTES,
+    on_event: Callable[[str], None] | None = None,
 ) -> FastAPI:
     """组装 FastAPI 应用。
 
     inbox：收到图片后放进去的容器，桌面端轮询它；
     on_receive：把 (图片字节, 原始文件名, content-type) 变成一条接收记录，
                 由 services 层提供；抛异常时其 user_message 会转给手机页面。
+    on_event：一行日志的回调（由 services 写进 data/logs/upload.log）。
+              "手机明明点了上传、电脑却没反应"只能靠它查。
     """
     app = FastAPI(title="jp-notebook upload", docs_url=None, redoc_url=None, openapi_url=None)
 
+    def _log(text: str) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(text)
+        except Exception:  # noqa: BLE001 - 日志写不进去也不能影响上传
+            pass
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
+        _log("GET / 打开了上传页")
         return HTMLResponse(UPLOAD_PAGE)
 
     @app.get("/health")
     def health() -> dict[str, bool]:
         return {"ok": True}
 
+    @app.get("/ping")
+    def ping(request: Request) -> Response:
+        """手机页面打点：走到哪一步都记一行，排查"点了没反应"全靠它。"""
+        _log(f"GET /ping {request.url.query[:200]}")
+        return Response(status_code=204)
+
     @app.post("/upload")
     async def upload(file: UploadFile = File(...)) -> JSONResponse:
         content_type = (file.content_type or "").lower()
-        if not content_type.startswith("image/"):
+        filename = file.filename or "photo.jpg"
+        if not _acceptable_type(content_type):
+            _log(f"POST /upload name={filename!r} type={content_type!r} -> 415 不是图片类型")
             return JSONResponse(
                 {
                     "ok": False,
@@ -168,6 +294,7 @@ def create_app(
             total += len(chunk)
             if total > max_bytes:
                 limit_mb = max(1, max_bytes // (1024 * 1024))
+                _log(f"POST /upload name={filename!r} type={content_type!r} -> 413 超过 {limit_mb}MB")
                 return JSONResponse(
                     {
                         "ok": False,
@@ -178,12 +305,17 @@ def create_app(
             chunks.append(chunk)
 
         try:
-            received = on_receive(b"".join(chunks), file.filename or "photo.jpg", content_type)
+            received = on_receive(b"".join(chunks), filename, content_type)
         except Exception as exc:  # noqa: BLE001 - 任何失败都要变成手机能读懂的话
             message = getattr(exc, "user_message", "") or "这张图片没能存下来，请重试或换一张。"
+            _log(f"POST /upload name={filename!r} type={content_type!r} bytes={total} -> 400 {message}")
             return JSONResponse({"ok": False, "message": message}, status_code=400)
 
         inbox.put(received)
+        _log(
+            f"POST /upload name={filename!r} type={content_type!r} bytes={total} -> 200 "
+            f"saved {getattr(received, 'relative_path', '')}"
+        )
         return JSONResponse(
             {
                 "ok": True,
@@ -210,12 +342,14 @@ class UploadServer:
         host: str = "0.0.0.0",
         port: int = 8765,
         max_bytes: int = MAX_UPLOAD_BYTES,
+        on_event: Callable[[str], None] | None = None,
     ) -> None:
         self._inbox = inbox
         self._on_receive = on_receive
         self._host = host
         self._port = int(port)
         self._max_bytes = max_bytes
+        self._on_event = on_event
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
 
@@ -244,7 +378,12 @@ class UploadServer:
             return
 
         _quiet_uvicorn()
-        app = create_app(inbox=self._inbox, on_receive=self._on_receive, max_bytes=self._max_bytes)
+        app = create_app(
+            inbox=self._inbox,
+            on_receive=self._on_receive,
+            max_bytes=self._max_bytes,
+            on_event=self._on_event,
+        )
         config = uvicorn.Config(
             app,
             host=self._host,

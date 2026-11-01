@@ -90,6 +90,7 @@ def main() -> int:
     config.DATA_DIR = WORK_DIR
     config.UPLOAD_DIR = UPLOAD_ROOT
     config.DB_PATH = WORK_DIR / "verify.db"
+    config.LOG_DIR = WORK_DIR / "logs"
 
     # ---------------------------------------------------------------- 1
     print("\n== 1. 收件箱（跨线程用） ==")
@@ -172,6 +173,11 @@ def main() -> int:
     check("页面 200", response.status_code == 200, str(response.status_code))
     check("有拍照上传的 input", 'type="file"' in html and "image/*" in html)
     check("调用了后置摄像头", 'capture="environment"' in html)
+    check("还有一条不带 capture 的相册入口", html.count('type="file"') == 2, str(html.count('type="file"')))
+    check("上传失败可以点按钮重试", 'id="retry"' in html)
+    check("用 XHR 而不是 fetch（能看进度和超时）", "XMLHttpRequest" in html and "xhr.upload.onprogress" in html)
+    check("页面会往 /ping 打点", "/ping?e=" in html)
+    check("读到空文件时也有提示", "没读到照片" in html)
     check("页面里没有接口地址", config.get_settings().base_url not in html)
     check("页面里没有 API Key 变量名", "OPENAI_API_KEY" not in html)
     api_key = config.get_settings().api_key
@@ -183,6 +189,10 @@ def main() -> int:
     health = requests.get(base + "/health", timeout=10)
     check("健康检查返回 ok", health.status_code == 200 and health.json() == {"ok": True},
           health.text[:80])
+
+    pong = requests.get(base + "/ping", params={"e": "pick 1.2 MB image/jpeg"}, timeout=10)
+    check("/ping 返回 204", pong.status_code == 204, str(pong.status_code))
+    check("/ping 没有响应体", pong.text == "", pong.text[:40])
 
     # ---------------------------------------------------------------- 6
     print("\n== 6. 正常上传 ==")
@@ -198,8 +208,36 @@ def main() -> int:
     check("收件箱里是刚传那张", latest is not None and latest.size > 0)
     check("文件真的落盘了", latest is not None and latest.absolute_path.is_file())
 
+    print("\n== 6b. 手机只肯说 octet-stream / 空类型时也要收 ==")
+    before = len(INBOX)
+    octet = requests.post(
+        base + "/upload",
+        files={"file": ("IMG_7777.jpg", jpeg_bytes((240, 160)), "application/octet-stream")},
+        timeout=15,
+    )
+    check("octet-stream 的真图能收（200）", octet.status_code == 200,
+          str(octet.status_code) + octet.text[:120])
+    check("octet-stream 上传后进了收件箱", len(INBOX) == before + 1, f"{before} -> {len(INBOX)}")
+
+    no_type = requests.post(
+        base + "/upload",
+        files={"file": ("IMG_8888.jpg", jpeg_bytes((240, 160)), "")},
+        timeout=15,
+    )
+    check("content-type 为空也能收（200）", no_type.status_code == 200,
+          str(no_type.status_code) + no_type.text[:120])
+
+    octet_garbage = requests.post(
+        base + "/upload",
+        files={"file": ("x.jpg", b"still not an image", "application/octet-stream")},
+        timeout=10,
+    )
+    check("octet-stream 的垃圾内容仍被拒（400）", octet_garbage.status_code == 400,
+          str(octet_garbage.status_code))
+
     # ---------------------------------------------------------------- 7
     print("\n== 7. 各种失败 ==")
+    before_fail = len(INBOX)
     pdf = requests.post(
         base + "/upload",
         files={"file": ("scan.pdf", b"%PDF-1.4 fake", "application/pdf")},
@@ -216,10 +254,25 @@ def main() -> int:
     )
     check("假 jpg 被拒（400）", weird.status_code == 400, str(weird.status_code))
     check("假 jpg 的提示是人话", bool(weird.json().get("message")), weird.json().get("message", ""))
-    check("失败时没有往收件箱塞东西", len(INBOX) == before + 1, str(len(INBOX)))
+    check("失败时没有往收件箱塞东西", len(INBOX) == before_fail, f"{before_fail} -> {len(INBOX)}")
 
     empty = requests.post(base + "/upload", files={"file": ("e.jpg", b"", "image/jpeg")}, timeout=10)
     check("空文件被拒（400）", empty.status_code == 400, str(empty.status_code))
+
+    print("\n== 7b. 上传流水账（手机端出问题只能靠它查） ==")
+    log_file = upload_service.log_path()
+    check("日志文件写出来了", log_file.is_file(), str(log_file))
+    log_text = log_file.read_text(encoding="utf-8") if log_file.is_file() else ""
+    check("记下了打开的首页", "GET / 打开了上传页" in log_text)
+    check("记下了页面打点", "GET /ping e=pick" in log_text, log_text[-300:])
+    check("记下了成功的那次上传", "-> 200 saved" in log_text, log_text[-200:])
+    check("成功日志里有文件名", "IMG_1234.jpg" in log_text)
+    check("成功日志里有 content-type", "type='image/jpeg'" in log_text, log_text[-300:])
+    check("成功日志里有字节数", "bytes=" in log_text)
+    check("记下了 415", "-> 415" in log_text and "scan.pdf" in log_text, log_text[-300:])
+    check("记下了 400", "-> 400" in log_text and "x.jpg" in log_text, log_text[-300:])
+    check("记下了启动", "上传服务已启动" in log_text, log_text[:300])
+    check("每行都有时间戳", all(line[:2] == "20" for line in log_text.splitlines() if line))
 
     print("\n== 8. 超过大小上限 ==")
     tiny_port = free_port()
