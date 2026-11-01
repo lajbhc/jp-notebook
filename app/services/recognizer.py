@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,8 @@ from app.services.errors import (
 
 __all__ = [
     "MAX_IMAGE_EDGE",
+    "CROP_MIN_SIDE",
+    "normalize_crop",
     "prepare_image",
     "extract_json_object",
     "build_entry",
@@ -60,6 +63,10 @@ EXTRA_BODY: dict[str, Any] = {"enable_thinking": False}
 # 只有这些格式交给 Pillow 解码，其余一律按"打不开"处理。
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "BMP", "GIF", "TIFF"}
 
+# 框选区域（归一化）每条边至少占原图这么多。再小就当用户手抖，直接提示重框，
+# 免得把一条缝送给模型、再让用户面对一堆瞎猜出来的字段。
+CROP_MIN_SIDE = 0.02
+
 # 允许从模型返回里取用的字段（与 entries 表的列一一对应）。
 _TEXT_FIELDS = (
     "word",
@@ -78,9 +85,50 @@ DEFAULT_TIMEOUT = (10.0, 120.0)  # (连接超时, 读取超时)
 
 
 # --------------------------------------------------------------------- 图片
-def prepare_image(image_path: str | Path) -> str:
-    """读图 → 校正方向 → 必要时缩小 → 返回 data URL。"""
+def normalize_crop(
+    crop: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float, float] | None:
+    """把界面给的框选区域收拾干净。
+
+    约定：`(x, y, w, h)` 都是 0~1 的比例，相对"原图"（不是屏幕上缩放后的预览）。
+    越界往里夹，比例小于 `CROP_MIN_SIDE` 的直接报错——框得太小手一抖就点到空白处，
+    与其让模型对着一条缝瞎猜，不如让用户重拖。
+    """
+    if crop is None:
+        return None
+    try:
+        x, y, w, h = (float(value) for value in crop)
+    except (TypeError, ValueError) as exc:
+        raise ImageInvalid(
+            f"bad crop: {crop!r}: {exc}",
+            "框选区域不对劲，重新拖一个框，或者点「还原整张」识别整张图。",
+        ) from exc
+
+    if not all(math.isfinite(value) for value in (x, y, w, h)):
+        raise ImageInvalid(
+            f"bad crop: {crop!r}",
+            "框选区域不对劲，重新拖一个框，或者点「还原整张」识别整张图。",
+        )
+
+    x = min(max(x, 0.0), 1.0)
+    y = min(max(y, 0.0), 1.0)
+    w = min(max(w, 0.0), 1.0 - x)
+    h = min(max(h, 0.0), 1.0 - y)
+    if w < CROP_MIN_SIDE or h < CROP_MIN_SIDE:
+        raise ImageInvalid(
+            f"crop too small: {crop!r}",
+            "框选的区域太小了。重新拖一个大一点的框，或者点「还原整张」识别整张图。",
+        )
+    return (x, y, w, h)
+
+
+def prepare_image(
+    image_path: str | Path,
+    crop: tuple[float, float, float, float] | None = None,
+) -> str:
+    """读图 → 校正方向 →（可选）裁出框选区域 → 必要时缩小 → 返回 data URL。"""
     path = Path(image_path)
+    box = normalize_crop(crop)
     try:
         size = path.stat().st_size
     except OSError as exc:
@@ -98,18 +146,34 @@ def prepare_image(image_path: str | Path) -> str:
             if detected not in ALLOWED_FORMATS:
                 raise ImageInvalid(f"unsupported format: {detected or 'unknown'}")
 
-            # 手机拍的照片方向信息藏在 EXIF 里，不校正会横躺着送进模型
+            # 手机拍的照片方向信息藏在 EXIF 里，不校正会横躺着送进模型。
+            # 注意：只要 EXIF 里写了方向，就必须重新编码——否则下面会走"原样发原文件"
+            # 的捷径，把带方向标记的字节丢给模型，而模型多半不看 EXIF，等于没校正。
+            orientation = img.getexif().get(274, 1)
             img = ImageOps.exif_transpose(img)
             width, height = img.size
             if width <= 0 or height <= 0:
                 raise ImageInvalid(f"bad image size: {width}x{height}")
 
-            longest = max(width, height)
+            if box is not None:
+                left = min(max(int(round(box[0] * width)), 0), width - 1)
+                top = min(max(int(round(box[1] * height)), 0), height - 1)
+                right = min(max(int(round((box[0] + box[2]) * width)), left + 1), width)
+                bottom = min(max(int(round((box[1] + box[3]) * height)), top + 1), height)
+                img = img.crop((left, top, right, bottom))
+                # 裁出来的是一块新图，不能再偷懒直接发原文件字节
+                need_reencode = True
+            else:
+                need_reencode = bool(orientation and orientation != 1)
+
+            longest = max(img.size)
             if longest > MAX_IMAGE_EDGE:
                 img.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.LANCZOS)
                 need_reencode = True
             else:
-                need_reencode = detected not in ("JPEG", "PNG") or size > KEEP_ORIGINAL_BYTES
+                need_reencode = need_reencode or (
+                    detected not in ("JPEG", "PNG") or size > KEEP_ORIGINAL_BYTES
+                )
 
             if not need_reencode:
                 mime = "image/png" if detected == "PNG" else "image/jpeg"
@@ -245,10 +309,15 @@ def recognize(
     image_path: str | Path,
     entry_type: str,
     *,
+    crop: tuple[float, float, float, float] | None = None,
     source_image: str = "",
     timeout: tuple[float, float] = DEFAULT_TIMEOUT,
 ) -> Entry:
-    """识别一张图片。失败时抛 `RecognitionError` 的子类。"""
+    """识别一张图片。失败时抛 `RecognitionError` 的子类。
+
+    `crop` 是界面上框出来的区域（归一化 `(x, y, w, h)`，相对原图）。
+    传 None 就识别整张。
+    """
     if entry_type not in ENTRY_TYPES:
         raise ValueError(f"unknown entry_type: {entry_type!r}")
 
@@ -256,7 +325,7 @@ def recognize(
     if not settings.recognition_ready:
         raise MissingApiKey(settings.missing_required)
 
-    data_url = prepare_image(image_path)
+    data_url = prepare_image(image_path, crop)
 
     request_body = {
         "model": settings.vision_model,

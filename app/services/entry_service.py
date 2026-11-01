@@ -156,9 +156,16 @@ def absolute_image_path(relative: str, *, root: Path | None = None) -> Path | No
 
 
 # --------------------------------------------------------------- 识别
-def recognize_image(image_path: str | Path, entry_type: str) -> models.Entry:
-    """调识别服务。失败时抛 RecognitionError 子类，由 UI 统一提示。"""
-    return recognizer.recognize(image_path, entry_type)
+def recognize_image(
+    image_path: str | Path,
+    entry_type: str,
+    crop: tuple[float, float, float, float] | None = None,
+) -> models.Entry:
+    """调识别服务。失败时抛 RecognitionError 子类，由 UI 统一提示。
+
+    `crop` 是录入页上框出来的区域（归一化 `(x, y, w, h)`），None 表示整张。
+    """
+    return recognizer.recognize(image_path, entry_type, crop=crop)
 
 
 # --------------------------------------------------------------- 保存

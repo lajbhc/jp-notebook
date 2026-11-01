@@ -159,7 +159,7 @@ def main() -> int:
     jpeg = make_jpeg(WORK_DIR / "src" / "shot.jpg")
     page._load_image(str(jpeg))
     app.processEvents()
-    check("预览有画面", page._preview.pixmap() is not None and not page._preview.pixmap().isNull())
+    check("预览有画面", page._preview.image_path is not None)
     check("「开始识别」被启用", page._recognize_button.isEnabled())
     check(
         "显示出图片路径",
@@ -218,7 +218,7 @@ def main() -> int:
     page._load_image(str(jpeg))
     app.processEvents()
 
-    def fake_ok(_path, entry_type):
+    def fake_ok(_path, entry_type, crop=None):
         return models.Entry(
             type=entry_type,
             word="走る",

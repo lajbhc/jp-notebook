@@ -26,7 +26,8 @@ jp-notebook/
   app/
     ui/          # PySide6 窗口、托盘、提醒小窗
       main_window.py      # 主窗口：左侧导航 + 页面容器
-      capture_page.py     # 录入页：选图/预览/识别/校正/保存
+      capture_page.py     # 录入页：选图/框选/预览/识别/校正/保存
+      crop_view.py        # 预览图 + 拖鼠标框选要识别的区域（右键取消）
       recognition_worker.py  # 把识别放到子线程，避免界面卡死
       library_page.py     # 词库页：筛选 + 翻页 + 编辑/删除入口
       entry_table_model.py   # 表格模型：把一条记录摊成 6 列
@@ -137,12 +138,15 @@ copy .env.example .env
 
 1. 左侧点「录入」，选类型（生词 / 语法）
 2. 点「选择图片」或把图片拖进预览框
-3. 点「开始识别」，等识别结果自动填进表单（识别在子线程跑，界面不会卡）
-4. **对照原图逐个字段检查**——模型可能抄漏或抄一半，这一步不能省
-5. 点「保存到词库」
+3. 一页上题多的时候，在预览图上按住鼠标拖一个框，只识别那一块
+   （右键或 Esc 取消，「还原整张」回到整图识别；不框就是整张）
+4. 点「开始识别」，等识别结果自动填进表单（识别在子线程跑，界面不会卡）
+5. **对照原图逐个字段检查**——模型可能抄漏或抄一半，这一步不能省
+6. 点「保存到词库」
 
 识别失败不会丢东西：红色提示条会说明原因，表单照样能手动填完再保存。
-保存时原图会被复制进 `data/uploads/<日期>/`，库里只存相对路径。
+保存时原图会被复制进 `data/uploads/<日期>/`，库里只存相对路径；
+存的是**整张原图**，框选只影响送去识别的那一块，不改图片本身。
 
 录入之后都在「词库」页里管：
 
@@ -234,6 +238,11 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 
 - 图片长边超过 1600px 会等比缩小后再发，单张上限 20MB；带透明通道的图会被
   转成白底 JPEG，手机照片会先按 EXIF 校正方向。
+- **框选只改变送去识别的那一块**：`CropView.selection()` 返回相对"摆正后的整图"的
+  归一化比例 `(x, y, w, h)`，服务层在 `exif_transpose()` 之后按原图尺寸裁剪，
+  再走原来的缩放规则。预览图也用 `QImageReader(autoTransform=True)` 摆正，
+  两边空间一致，竖拍的照片不会框错位置。存的仍然是整张原图。
+- 框太小（小于 14 像素）当误触丢掉；比例小于 2%（`CROP_MIN_SIDE`）服务层会再拦一次。
 - **iPhone 默认的 HEIC 格式 Pillow 打不开**，会提示"图片打不开"。用微信/QQ
   传图，或在手机上先转成 JPG。
 - `type`、`source_image`、时间戳一律由本地写入，模型返回的同名字段会被忽略。
@@ -277,8 +286,8 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 | 7 | 托盘提醒 | ✅ 完成 |
 | 8 | 收尾（日志 / 测试 / 文档） | ✅ 完成 |
 
-> 想到但暂时不做的功能（框选识别范围、孤儿图片清理、导出等）记在
-> `docs/todo.md`，别在这里堆。
+> 想到但暂时不做的功能（一页多题批量录入、孤儿图片清理、导出等）记在
+> `docs/todo.md`，别在这里堆。「框选识别范围」已经做完，记在下面。
 
 ## 验收脚本
 
@@ -298,6 +307,8 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 .\venv\Scripts\python.exe scripts\verify_checkin_ui.py    # 阶段 6：offscreen 点一遍打卡页
 .\venv\Scripts\python.exe scripts\verify_reminder.py      # 阶段 7：提醒到点/已打卡/延后/跨零点
 .\venv\Scripts\python.exe scripts\verify_reminder_ui.py   # 阶段 7：小窗、托盘、关窗进托盘、到点自动弹
+.\venv\Scripts\python.exe scripts\verify_crop.py          # 框选：裁出来的像素跟框的位置对得上
+.\venv\Scripts\python.exe scripts\verify_crop_ui.py       # 框选：offscreen 模拟拖鼠标，验 letterbox 映射
 ```
 
 最后那条是给手机上传页里那段 JS 用的：它只在手机浏览器里执行，Python 的测试看不见它。

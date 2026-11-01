@@ -1,9 +1,10 @@
-"""录入页：选图 → 识别 → 人工校正 → 保存。
+"""录入页：选图 → （可选）框选范围 → 识别 → 人工校正 → 保存。
 
 这一页只做界面和交互，不做任何识别/存库细节：
 - 识别走 `RecognitionWorker`（子线程），失败只拿 `user_message` 显示
 - 保存走 `entry_service.save_entry()`，字段校验也在那一层
 - 图片复制进 data/uploads 的动作同样在 entry_service，本页只把选中的路径传下去
+- 框选只算"归一化比例"，真正裁剪在 services/recognizer 里做
 
 识别失败不是死路：界面保留表单，用户可以照着原图手填完再保存。
 """
@@ -13,7 +14,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
@@ -36,11 +36,14 @@ from app.services import entry_service
 from app.services.entry_service import EntryValidationError, SaveFailed
 from app.services.errors import RecognitionError
 from app.ui import entry_fields
+from app.ui.crop_view import CropView
 from app.ui.recognition_worker import RecognitionWorker
 
 _IMAGE_FILTER = "图片 (*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tif *.tiff)"
 
 _PREVIEW_SIZE = (300, 220)
+
+_PLACEHOLDER = "还没有选择图片\n\n点「选择图片」，或把图片拖到这里"
 
 _BANNER_STYLES = {
     "error": "border: 1px solid #e0a1a1; background: #fdecec; color: #a12622;",
@@ -53,40 +56,6 @@ _BANNER_STYLES = {
 _FIELDS: tuple[tuple[str, str, str | None], ...] = tuple(
     (spec.name, spec.label, spec.only_type) for spec in entry_fields.FIELDS
 )
-
-
-class _DropPreview(QLabel):
-    """支持把图片拖进来的预览框。拖拽比"点选择图片 → 找目录"快得多。"""
-
-    file_dropped = Signal(str)
-
-    def __init__(self, text: str) -> None:
-        super().__init__(text)
-        self.setAcceptDrops(True)
-
-    @staticmethod
-    def _first_local_file(event) -> str | None:
-        mime = event.mimeData()
-        if not mime.hasUrls():
-            return None
-        for url in mime.urls():
-            if url.isLocalFile():
-                return url.toLocalFile()
-        return None
-
-    def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt 的命名
-        if self._first_local_file(event):
-            event.acceptProposedAction()
-
-    def dragMoveEvent(self, event) -> None:  # noqa: N802
-        if self._first_local_file(event):
-            event.acceptProposedAction()
-
-    def dropEvent(self, event) -> None:  # noqa: N802
-        path = self._first_local_file(event)
-        if path:
-            self.file_dropped.emit(path)
-            event.acceptProposedAction()
 
 
 class CapturePage(QWidget):
@@ -158,14 +127,21 @@ class CapturePage(QWidget):
         column = QVBoxLayout()
         column.setSpacing(8)
 
-        self._preview = _DropPreview("还没有选择图片\n\n点「选择图片」，或把图片拖到这里")
-        self._preview.setAlignment(Qt.AlignCenter)
-        self._preview.setFixedSize(*_PREVIEW_SIZE)
-        self._preview.setStyleSheet(
-            "border: 1px dashed #bbb; border-radius: 8px; color: #888; font-size: 12px;"
-        )
+        self._preview = CropView(_PLACEHOLDER, size=_PREVIEW_SIZE)
         self._preview.file_dropped.connect(self._load_image)
+        self._preview.selection_changed.connect(self._on_selection_changed)
         column.addWidget(self._preview)
+
+        self._crop_label = QLabel("")
+        self._crop_label.setWordWrap(True)
+        self._crop_label.setStyleSheet("font-size: 11px; color: #2f6f9f;")
+        column.addWidget(self._crop_label)
+
+        self._clear_crop_button = QPushButton("还原整张")
+        self._clear_crop_button.setEnabled(False)
+        self._clear_crop_button.setToolTip("取消框选，识别整张图")
+        self._clear_crop_button.clicked.connect(self._preview.clear_selection)
+        column.addWidget(self._clear_crop_button)
 
         self._image_label = QLabel("")
         self._image_label.setWordWrap(True)
@@ -267,8 +243,7 @@ class CapturePage(QWidget):
             self._load_image(path)
 
     def _load_image(self, path: str) -> None:
-        pixmap = QPixmap(path)
-        if pixmap.isNull():
+        if not self._preview.set_image(path):
             self._image_path = None
             self._recognize_button.setEnabled(False)
             self._show_banner(
@@ -278,17 +253,18 @@ class CapturePage(QWidget):
             )
             return
 
-        self._image_path = Path(path)
-        self._preview.setPixmap(
-            pixmap.scaled(
-                *_PREVIEW_SIZE,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-        )
+        self._image_path = self._preview.image_path
         self._image_label.setText(str(self._image_path))
         self._recognize_button.setEnabled(True)
-        self._show_banner(f"已选择：{self._image_path.name}。点「开始识别」，或直接手填后保存。", "info")
+        self._show_banner(
+            f"已选择：{self._image_path.name}。"
+            "可以在图上拖一个框只识别那一块；不框就是整张。",
+            "info",
+        )
+
+    def _on_selection_changed(self, selection) -> None:
+        self._crop_label.setText(self._preview.selection_text())
+        self._clear_crop_button.setEnabled(selection is not None)
 
     # ------------------------------------------------------------- 识别
     def _start_recognition(self) -> None:
@@ -296,10 +272,14 @@ class CapturePage(QWidget):
             self._show_banner("请先选择一张图片。", "error")
             return
 
+        crop = self._preview.selection()
         self._set_busy(True)
-        self._show_banner("正在识别…（几秒到几十秒，界面不会卡住）", "info")
+        if crop is None:
+            self._show_banner("正在识别整张图…（几秒到几十秒，界面不会卡住）", "info")
+        else:
+            self._show_banner("正在识别框选的那一块…（几秒到几十秒，界面不会卡住）", "info")
 
-        self._worker = RecognitionWorker(self._image_path, self.current_type(), self)
+        self._worker = RecognitionWorker(self._image_path, self.current_type(), crop, self)
         self._worker.succeeded.connect(self._on_recognized)
         self._worker.failed.connect(self._on_recognize_failed)
         self._worker.finished.connect(lambda: self._set_busy(False))
@@ -396,8 +376,9 @@ class CapturePage(QWidget):
                 editor.clear()
 
         self._image_path = None
-        self._preview.clear()
-        self._preview.setText("还没有选择图片\n\n点「选择图片」，或把图片拖到这里")
+        self._preview.clear_image()
+        self._crop_label.setText("")
+        self._clear_crop_button.setEnabled(False)
         self._image_label.setText("")
         self._recognize_button.setEnabled(False)
         if not keep_banner:
