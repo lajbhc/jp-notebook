@@ -89,6 +89,33 @@ copy .env.example .env
 .\venv\Scripts\python.exe -m app.main
 ```
 
+### 4. 先用探针确认接口能用
+
+换 Key、换模型、换服务商之后，**先跑探针再开界面**，它会把 HTTP 状态码和
+服务端返回的原文打出来：
+
+```powershell
+# 只用内置小图，验证"地址 + Key + 模型收不收图"
+.\venv\Scripts\python.exe scripts\probe_vision.py
+
+# 用真题照片，验证"认不认得出日文"
+.\venv\Scripts\python.exe scripts\probe_vision.py 一张真题照片.jpg
+
+# 命令行跑一次完整识别（不写库）
+.\venv\Scripts\python.exe scripts\try_recognize.py 照片.jpg --type grammar
+```
+
+## 识别相关的约定
+
+- 图片长边超过 1600px 会等比缩小后再发，单张上限 20MB；带透明通道的图会被
+  转成白底 JPEG，手机照片会先按 EXIF 校正方向。
+- **iPhone 默认的 HEIC 格式 Pillow 打不开**，会提示"图片打不开"。用微信/QQ
+  传图，或在手机上先转成 JPG。
+- `type`、`source_image`、时间戳一律由本地写入，模型返回的同名字段会被忽略。
+- 模型返回的字段走白名单，未知字段丢弃，非字符串值当空处理。
+- 所有失败都收敛成 `app/services/errors.py` 里的 `RecognitionError` 子类，
+  UI 只读 `user_message`，`detail` 只进日志。
+
 ## 配置项
 
 | 变量 | 必填 | 说明 |
@@ -99,13 +126,17 @@ copy .env.example .env
 | `UPLOAD_PORT` | 否 | 手机上传服务端口，默认 8765 |
 | `REMINDER_TIME` | 否 | 每日提醒时间，默认 21:00 |
 
+> `OPENAI_BASE_URL` 虽然必填，但代码里有官方默认值，所以缺省时会回落到
+> `https://api.openai.com/v1`。**这台机器连不上 api.openai.com**（连接超时），
+> 实际要换成一个国内可直连、且支持图片输入的兼容端点。
+
 ## 开发阶段
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 0 | 项目骨架与配置 | ✅ 完成 |
 | 1 | 存储层（SQLite） | ✅ 完成 |
-| 2 | 识别服务 + 接口探针 | ⬜ |
+| 2 | 识别服务 + 接口探针 | ✅ 完成 |
 | 3 | 录入页（上传 → 校正 → 保存） | ⬜ |
 | 4 | 词库页（列表 / 搜索 / 编辑 / 删除） | ⬜ |
 | 5 | 手机局域网上传 | ⬜ |
