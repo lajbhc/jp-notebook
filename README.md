@@ -115,6 +115,14 @@ copy .env.example .env
 - 模型返回的字段走白名单，未知字段丢弃，非字符串值当空处理。
 - 所有失败都收敛成 `app/services/errors.py` 里的 `RecognitionError` 子类，
   UI 只读 `user_message`，`detail` 只进日志。
+- **思考型模型必须先关思考**。实测端点（百炼 MaaS compatible-mode）默认走思考：
+  同一张图 `reasoning_content` 长度 939~3202 字不等，`max_tokens` 被吃光后正文
+  是空字符串、`finish_reason=length`。`recognizer.EXTRA_BODY` 里发
+  `enable_thinking: False`，稳定 2.3~2.5 秒出结果；若端点不认这个参数返回 400，
+  会自动去掉它重试一次。换模型时如果换成不支持该参数的厂商，只会多一次重试。
+- 提示词里明确要求"不要猜测"，但模型仍可能把长句抄一半（实测「誤り原因」只抄到
+  第 25 字就停，三种参数组合结果完全一致，属于模型固有行为）。这正是
+  **识别结果必须人工校正**的原因，不为此调参。
 
 ## 配置项
 
