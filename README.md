@@ -25,14 +25,20 @@
 jp-notebook/
   app/
     ui/          # PySide6 窗口、托盘、提醒小窗
+      main_window.py      # 主窗口：左侧导航 + 页面容器
+      capture_page.py     # 录入页：选图/预览/识别/校正/保存
+      recognition_worker.py  # 把识别放到子线程，避免界面卡死
     services/    # 识别、打卡等业务门面
+      entry_service.py    # 录入门面：图片落盘、表单校验、保存
+      recognizer.py       # 多模态识别
+      errors.py           # 统一错误模型
     storage/     # SQLite 读写封装（db.py 建表，repository.py 增删改查）
     prompts/     # 识别提示词模板
     models.py    # 数据模型 Entry（生词与语法共用）
     config.py    # 路径、环境变量、模型名
     main.py      # 桌面端入口
   server/        # 手机局域网上传服务
-  scripts/       # 一次性验证脚本（存储、识别探针）
+  scripts/       # 验证脚本（存储 / 识别 / 录入链路 / 界面）
   data/          # 运行时生成：app.db、uploads/、logs/（不入库）
   venv/          # 虚拟环境（不入库）
 ```
@@ -88,6 +94,17 @@ copy .env.example .env
 ```powershell
 .\venv\Scripts\python.exe -m app.main
 ```
+
+界面上的一条记录这样录入：
+
+1. 左侧点「录入」，选类型（生词 / 语法）
+2. 点「选择图片」或把图片拖进预览框
+3. 点「开始识别」，等识别结果自动填进表单（识别在子线程跑，界面不会卡）
+4. **对照原图逐个字段检查**——模型可能抄漏或抄一半，这一步不能省
+5. 点「保存到词库」
+
+识别失败不会丢东西：红色提示条会说明原因，表单照样能手动填完再保存。
+保存时原图会被复制进 `data/uploads/<日期>/`，库里只存相对路径。
 
 ### 4. 先用探针确认接口能用
 
@@ -145,12 +162,23 @@ copy .env.example .env
 | 0 | 项目骨架与配置 | ✅ 完成 |
 | 1 | 存储层（SQLite） | ✅ 完成 |
 | 2 | 识别服务 + 接口探针 | ✅ 完成 |
-| 3 | 录入页（上传 → 校正 → 保存） | ⬜ |
+| 3 | 录入页（上传 → 校正 → 保存） | ✅ 完成 |
 | 4 | 词库页（列表 / 搜索 / 编辑 / 删除） | ⬜ |
 | 5 | 手机局域网上传 | ⬜ |
 | 6 | 每日打卡 | ⬜ |
 | 7 | 托盘提醒 | ⬜ |
 | 8 | 收尾（日志 / 测试 / 文档） | ⬜ |
+
+## 验收脚本
+
+每个阶段都有对应的脚本，全部不联网、不弹窗，用独立的临时库跑完即删：
+
+```powershell
+.\venv\Scripts\python.exe scripts\verify_storage.py       # 阶段 1：建表、增删改查、并发
+.\venv\Scripts\python.exe scripts\verify_recognition.py   # 阶段 2：识别解析与各种错误分支
+.\venv\Scripts\python.exe scripts\verify_capture.py       # 阶段 3：图片落盘、表单校验、保存
+.\venv\Scripts\python.exe scripts\verify_ui.py            # 阶段 3：offscreen 模式跑真实窗口与点击
+```
 
 ## 安全约定
 
