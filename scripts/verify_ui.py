@@ -108,9 +108,9 @@ def main() -> int:
     check("点「打卡」能切到第 3 页", stack.currentIndex() == 2, str(stack.currentIndex()))
     check("标题跟着变", "打卡" in window.windowTitle(), window.windowTitle())
     check(
-        "占位页说明了阶段",
-        any("阶段 6" in text for text in labels_of(stack.currentWidget())),
-        str(labels_of(stack.currentWidget())),
+        "打卡页是真的页面（阶段 6 已接入）",
+        stack.currentWidget() is window.checkin_page,
+        type(stack.currentWidget()).__name__,
     )
 
     nav.setCurrentRow(0)

@@ -1,10 +1,10 @@
 """主窗口：左侧导航 + 右侧页面容器。
 
-「录入」「词库」「手机上传」已经是真页面，打卡先放占位说明——宁可显示
-"这一页还没做"，也不做一个看着能点、点了没反应的假界面。
+「录入」「词库」「打卡」「手机上传」四页都是真的了——宁可显示"这一页还没做"，
+也不做一个看着能点、点了没反应的假界面。
 
 用 QStackedWidget + QListWidget 而不是 QTabWidget：手机上传要放一整块二维码、
-阶段 6 的日历也要占满整块区域，左侧导航比顶部标签更省空间。
+打卡页的日历也要占满整块区域，左侧导航比顶部标签更省空间。
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from app import config
 from app.ui.capture_page import CapturePage
+from app.ui.checkin_page import CheckinPage
 from app.ui.library_page import LibraryPage
 from app.ui.upload_page import UploadPage
 
@@ -116,15 +117,16 @@ class MainWindow(QMainWindow):
         self.library_page = LibraryPage()
         self.library_page.message.connect(self._show_status)
 
+        self.checkin_page = CheckinPage()
+        self.checkin_page.message.connect(self._show_status)
+
         self.upload_page = UploadPage()
         self.upload_page.message.connect(self._show_status)
         self.upload_page.image_chosen.connect(self._on_image_from_phone)
 
         self._stack.addWidget(self.capture_page)
         self._stack.addWidget(self.library_page)
-        self._stack.addWidget(
-            _placeholder_page("打卡", "阶段 6 接入：每天点一次「今日学习完成」，显示连续天数与月历。")
-        )
+        self._stack.addWidget(self.checkin_page)
         self._stack.addWidget(self.upload_page)
         return self._stack
 
@@ -135,6 +137,7 @@ class MainWindow(QMainWindow):
         # 切到词库时重查一次：别的页面可能刚存/删过记录
         if index == 1:
             self.library_page.reload()
+        # 打卡页自己在 showEvent 里刷新（跨过零点也算），这里不用再管
 
     def _on_entry_saved(self, entry) -> None:
         self._show_status(f"已保存：{entry.title}（id={entry.id}）")

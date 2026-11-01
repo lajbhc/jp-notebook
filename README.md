@@ -33,10 +33,12 @@ jp-notebook/
       entry_edit_dialog.py   # 编辑对话框（带原图预览）
       entry_fields.py     # 10 个字段的定义，录入页与编辑框共用
       upload_page.py      # 手机上传页：地址、二维码、收到的图、一键送去录入
+      checkin_page.py     # 打卡页：连续天数、今日按钮、本月日历
     services/    # 识别、打卡等业务门面
       entry_service.py    # 录入门面：图片落盘、表单校验、保存
       library_service.py  # 词库门面：查询/筛选/翻页/统计/删除
       upload_service.py   # 上传门面：启停服务、本机 IP、收图落盘、收件箱
+      checkin_service.py  # 打卡门面：打卡幂等、连续天数、月历网格
       recognizer.py       # 多模态识别
       errors.py           # 统一错误模型
     storage/     # SQLite 读写封装（db.py 建表，repository.py 增删改查）
@@ -47,7 +49,8 @@ jp-notebook/
   server/        # 手机局域网上传服务
     upload_server.py   # FastAPI 应用 + 后台线程跑 uvicorn（不含识别、不碰数据库）
     queue.py           # 线程安全收件箱（HTTP 线程放，界面线程取）
-  scripts/       # 验证脚本（存储 / 识别 / 录入链路 / 界面 / 手机上传）
+  scripts/       # 验证脚本（存储 / 识别 / 录入链路 / 界面 / 手机上传 / 打卡）
+  docs/          # venv 权限绕行的记录、待办清单
   data/          # 运行时生成：app.db、uploads/、logs/（不入库）
   venv/          # 虚拟环境（不入库）
 ```
@@ -160,6 +163,18 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 传 PDF、传超大图、传坏文件都会被挡住，手机页面和桌面端都会给出原因，不会静默失败。
 安卓相机常把类型报成 `application/octet-stream`，这类也照收，真是不是图片由 Pillow 判断。
 
+每天学完点一下「打卡」：
+
+1. 左侧点「打卡」，大数字是**已连续天数**，右边一行小字是今天的状态
+2. 想留一句"今天学了什么"就填在备注框里，然后点「今日学习完成」
+3. 点完按钮会变成「今日已打卡」并且变灰，今天那格在日历上被涂成蓝色
+4. 用 `‹` `›` 可以翻上个月下个月看以前的记录，标题里带着当月打卡天数
+
+同一天点多少次都只有一行记录（表上 `date` 有 UNIQUE 约束），也不会覆盖第一次写的备注。
+连续天数按这个规则数：今天打了就从今天往前数；今天还没打但昨天打了，就先显示昨天那段
+（今天还有机会不断）；昨天也没打就是断了，显示 0。这样第二天早上打开程序看到的数字
+不会突然掉到 0。
+
 ### 4. 先用探针确认接口能用
 
 换 Key、换模型、换服务商之后，**先跑探针再开界面**，它会把 HTTP 状态码和
@@ -219,9 +234,12 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 | 3 | 录入页（上传 → 校正 → 保存） | ✅ 完成 |
 | 4 | 词库页（列表 / 搜索 / 编辑 / 删除） | ✅ 完成 |
 | 5 | 手机局域网上传 | ✅ 完成 |
-| 6 | 每日打卡 | ⬜ |
+| 6 | 每日打卡 | ✅ 完成 |
 | 7 | 托盘提醒 | ⬜ |
 | 8 | 收尾（日志 / 测试 / 文档） | ⬜ |
+
+> 想到但暂时不做的功能（框选识别范围、孤儿图片清理、导出等）记在
+> `docs/todo.md`，别在这里堆。
 
 ## 验收脚本
 
@@ -237,6 +255,8 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 .\venv\Scripts\python.exe scripts\verify_upload.py        # 阶段 5：真起 HTTP 服务，测收图与各种失败
 .\venv\Scripts\python.exe scripts\verify_upload_ui.py     # 阶段 5：offscreen 点一遍手机上传页
 .\venv\Scripts\python.exe scripts\check_upload_page.py    # 阶段 5：用 node 跑手机页面里的 JS（缺 node 时跳过）
+.\venv\Scripts\python.exe scripts\verify_checkin.py       # 阶段 6：打卡幂等、连续天数、月历网格
+.\venv\Scripts\python.exe scripts\verify_checkin_ui.py    # 阶段 6：offscreen 点一遍打卡页
 ```
 
 最后那条是给手机上传页里那段 JS 用的：它只在手机浏览器里执行，Python 的测试看不见它。

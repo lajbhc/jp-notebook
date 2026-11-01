@@ -264,3 +264,112 @@ class EntryRepository:
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         return where, params
+
+
+class CheckinRepository:
+    """打卡记录。
+
+    一天最多一行（建表时 date 上就有 UNIQUE），所以"今天打过卡了吗"这个问题
+    由数据库来保证答案唯一，不需要调用方先查再写——那样在两次点击之间会漏。
+    """
+
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        self._db_path = db_path
+
+    def check(self, day: str | None = None, note: str = "") -> bool:
+        """记一次打卡。返回 True 表示这次真的新写入了，False 表示这天本来就有。"""
+        day = _checkin_day(day)
+        with connect(self._db_path) as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO checkins (date, note, created_at) VALUES (?, ?, ?)",
+                (day, note or "", now_text()),
+            )
+            return cursor.rowcount > 0
+
+    def exists(self, day: str | None = None) -> bool:
+        return self.get(day) is not None
+
+    def get(self, day: str | None = None) -> dict[str, str] | None:
+        day = _checkin_day(day)
+        with connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT date, note, created_at FROM checkins WHERE date = ?", (day,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def dates(
+        self,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> list[str]:
+        """按日期升序返回打卡日，可传闭区间。"""
+        clauses: list[str] = []
+        params: list[object] = []
+        if date_from:
+            clauses.append("date >= ?")
+            params.append(_checkin_day(date_from))
+        if date_to:
+            clauses.append("date <= ?")
+            params.append(_checkin_day(date_to))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with connect(self._db_path) as conn:
+            rows = conn.execute(f"SELECT date FROM checkins {where} ORDER BY date", params).fetchall()
+        return [row["date"] for row in rows]
+
+    def month_dates(self, year: int, month: int) -> list[str]:
+        """某个月的打卡日。用 LIKE 前缀而不是字符串比较，跨年跨月都不会错。"""
+        prefix = f"{year:04d}-{month:02d}"
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT date FROM checkins WHERE date LIKE ? ORDER BY date", (f"{prefix}-%",)
+            ).fetchall()
+        return [row["date"] for row in rows]
+
+    def recent(self, limit: int = 30) -> list[dict[str, str]]:
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT date, note, created_at FROM checkins ORDER BY date DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count(self, date_from: str | None = None, date_to: str | None = None) -> int:
+        with connect(self._db_path) as conn:
+            if date_from or date_to:
+                clauses: list[str] = []
+                params: list[object] = []
+                if date_from:
+                    clauses.append("date >= ?")
+                    params.append(_checkin_day(date_from))
+                if date_to:
+                    clauses.append("date <= ?")
+                    params.append(_checkin_day(date_to))
+                sql = f"SELECT COUNT(*) AS n FROM checkins WHERE {' AND '.join(clauses)}"
+                row = conn.execute(sql, params).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) AS n FROM checkins").fetchone()
+        return int(row["n"])
+
+    def first_date(self) -> str | None:
+        """最早一次打卡是哪天，用来算"坚持了多久"。"""
+        with connect(self._db_path) as conn:
+            row = conn.execute("SELECT MIN(date) AS d FROM checkins").fetchone()
+        return row["d"] if row else None
+
+    def remove(self, day: str | None = None) -> bool:
+        """撤销某天的打卡（点错了、想重记一次的情况）。返回是否真的删掉了一行。"""
+        day = _checkin_day(day)
+        with connect(self._db_path) as conn:
+            cursor = conn.execute("DELETE FROM checkins WHERE date = ?", (day,))
+            return cursor.rowcount > 0
+
+
+def _checkin_day(day: str | None) -> str:
+    """把日期规整成 'YYYY-MM-DD'，顺便挡住 '2026-13-01' 这类会在 SQL 里悄悄比较错的值。"""
+    if day is None or not str(day).strip():
+        return date.today().isoformat()
+    text = str(day).strip()
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError as exc:
+        raise ValueError(f"打卡日期格式应为 YYYY-MM-DD，收到：{text!r}") from exc
