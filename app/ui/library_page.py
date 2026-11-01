@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import sys
 
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -34,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import models
+from app.logger import get_logger
 from app.services import library_service
 from app.services.library_service import FilterInvalid, LibraryFailed
 from app.ui.entry_edit_dialog import EntryEditDialog
@@ -251,7 +251,7 @@ class LibraryPage(QWidget):
             self._show_error(exc.user_message)
             return
         except LibraryFailed as exc:
-            print(f"[library] {exc.detail}", file=sys.stderr)
+            get_logger("ui.library").warning("词库操作失败：%s", exc.detail)
             self._show_error(exc.user_message)
             return
 
@@ -273,7 +273,7 @@ class LibraryPage(QWidget):
         try:
             self.stats_label.setText(library_service.stats().text())
         except LibraryFailed as exc:
-            print(f"[library] {exc.detail}", file=sys.stderr)
+            get_logger("ui.library").warning("词库操作失败：%s", exc.detail)
             self.stats_label.setText("统计不可用")
 
     def _empty_text(self, has_rows: bool) -> str:
@@ -363,7 +363,7 @@ class LibraryPage(QWidget):
         try:
             deleted = library_service.delete_entry(entry.id)
         except LibraryFailed as exc:
-            print(f"[library] {exc.detail}", file=sys.stderr)
+            get_logger("ui.library").warning("词库操作失败：%s", exc.detail)
             self._show_error(exc.user_message)
             return
 

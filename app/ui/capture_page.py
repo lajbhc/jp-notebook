@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -32,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import models
+from app.logger import get_logger
 from app.services import entry_service
 from app.services.entry_service import EntryValidationError, SaveFailed
 from app.services.errors import RecognitionError
@@ -324,7 +324,7 @@ class CapturePage(QWidget):
 
     def _on_recognize_failed(self, user_message: str, detail: str) -> None:
         # detail 只进终端/日志，界面上只给人话
-        print(f"[recognize] {detail}", file=sys.stderr)
+        get_logger("ui.capture").warning("识别失败：%s", detail)
         self._show_banner(f"{user_message}\n也可以照着原图手动填完再保存。", "error")
 
     def _fill_form(self, entry: models.Entry) -> None:
@@ -362,11 +362,11 @@ class CapturePage(QWidget):
             return
         except RecognitionError as exc:
             # 图片复制失败（原图被移走 / 格式不支持 / 磁盘满）
-            print(f"[save] {exc.detail}", file=sys.stderr)
+            get_logger("ui.capture").warning("保存失败：%s", exc.detail)
             self._show_banner(exc.user_message, "error")
             return
         except SaveFailed as exc:
-            print(f"[save] {exc.detail}", file=sys.stderr)
+            get_logger("ui.capture").warning("保存失败：%s", exc.detail)
             self._show_banner(exc.user_message, "error")
             return
 

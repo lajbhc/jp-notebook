@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.logger import get_logger
 from app.services import checkin_service
 from app.services.checkin_service import CheckinFailed, Status
 
@@ -167,7 +168,7 @@ class CheckinPage(QWidget):
             self._status = checkin_service.status()
             grid = checkin_service.month_grid(self._year, self._month)
         except CheckinFailed as exc:
-            print(f"[checkin] {exc.detail}", flush=True)
+            get_logger("ui.checkin").warning("打卡失败：%s", exc.detail)
             self._show_banner(exc.user_message, "error")
             return
 
@@ -191,7 +192,7 @@ class CheckinPage(QWidget):
         try:
             status, newly = checkin_service.check_today(note)
         except CheckinFailed as exc:
-            print(f"[checkin] {exc.detail}", flush=True)
+            get_logger("ui.checkin").warning("打卡失败：%s", exc.detail)
             self._show_banner(exc.user_message, "error")
             return
 

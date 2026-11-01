@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import sys
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QPixmap
@@ -30,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import models
+from app.logger import get_logger
 from app.services import entry_service
 from app.services.entry_service import EntryValidationError, SaveFailed
 from app.ui import entry_fields
@@ -211,7 +211,7 @@ class EntryEditDialog(QDialog):
             self._show_error(exc.user_message)
             return
         except SaveFailed as exc:
-            print(f"[edit] {exc.detail}", file=sys.stderr)
+            get_logger("ui.edit").warning("保存编辑失败：%s", exc.detail)
             self._show_error(exc.user_message)
             return
         self.accept()

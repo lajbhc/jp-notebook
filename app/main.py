@@ -17,11 +17,14 @@ from PySide6.QtCore import QObject, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app import config
+from app.logger import get_logger, log_exception, setup_logging
 from app.services import checkin_service, reminder_service, upload_service
 from app.storage.db import StorageError, init_db
 from app.ui import tray as tray_module
 from app.ui.main_window import WINDOW_TITLE, MainWindow
 from app.ui.reminder_popup import ReminderPopup
+
+log = get_logger("main")
 
 # 一分钟看一次就够了：提醒时间是分钟级的，没必要每秒醒一次
 CHECK_INTERVAL_MS = 60_000
@@ -99,6 +102,7 @@ class AppShell(QObject):
         try:
             self.popup.show_reminder(status)
         except Exception:  # 弹窗失败不该影响别的功能
+            log.exception("提醒小窗弹不出来")
             return False
         return True
 
@@ -157,6 +161,7 @@ class AppShell(QObject):
         )
 
     def _quit(self) -> None:
+        log.info("退出：从托盘菜单退出")
         self.popup.hide()
         self.tray.close()
         self.timer.stop()
@@ -171,6 +176,8 @@ class AppShell(QObject):
 
 def main() -> int:
     config.ensure_dirs()
+    setup_logging()
+    log.info("启动：数据库 %s", config.DB_PATH)
 
     app = QApplication(sys.argv)
     app.setApplicationName(WINDOW_TITLE)
@@ -182,6 +189,7 @@ def main() -> int:
     try:
         init_db()
     except StorageError as exc:
+        log_exception(log, "数据库初始化失败", exc)
         QMessageBox.critical(
             None,
             WINDOW_TITLE,
