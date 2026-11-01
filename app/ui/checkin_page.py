@@ -39,9 +39,11 @@ _CELL_TODAY = "border: 2px solid #2f6f9f; border-radius: 4px; font-weight: bold;
 
 
 class CheckinPage(QWidget):
-    """每日打卡页。`message` 给状态栏用。"""
+    """每日打卡页。`message` 给状态栏用，`checked_in` 给托盘/提醒层用。"""
 
     message = Signal(str)
+    # 打卡成功后带上最新的 Status，外层据此更新托盘提示、抑制今晚的提醒
+    checked_in = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -200,6 +202,7 @@ class CheckinPage(QWidget):
         self.note_edit.clear()
         self.refresh()
         self.message.emit(f"{status.streak_text} 累计 {status.total} 天" if newly else "今天已经打过卡了")
+        self.checked_in.emit(status)
 
     def _shift_month(self, delta: int) -> None:
         month = self._month + delta

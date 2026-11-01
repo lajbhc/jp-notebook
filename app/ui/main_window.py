@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -29,6 +29,12 @@ from app.ui.upload_page import UploadPage
 
 WINDOW_TITLE = "日语错题本"
 WINDOW_SIZE = (1000, 720)
+
+# 导航栏里各页的位置，别处（托盘、提醒）要跳页时用这些常量而不是写死数字
+PAGE_CAPTURE = 0
+PAGE_LIBRARY = 1
+PAGE_CHECKIN = 2
+PAGE_UPLOAD = 3
 
 
 def _placeholder_page(title: str, detail: str) -> QWidget:
@@ -51,9 +57,14 @@ def _placeholder_page(title: str, detail: str) -> QWidget:
 
 
 class MainWindow(QMainWindow):
+    # 窗口收进托盘时发一次，AppShell 用它弹"还在后台跑着"的气泡
+    hidden_to_tray = Signal()
+
     def __init__(self, settings: config.Settings | None = None) -> None:
         super().__init__()
         self._settings = settings or config.get_settings()
+        self._minimize_to_tray = False
+        self._quitting = False
 
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(*WINDOW_SIZE)
@@ -135,7 +146,7 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(index)
         self.setWindowTitle(f"{WINDOW_TITLE} · {self._nav.currentItem().text()}")
         # 切到词库时重查一次：别的页面可能刚存/删过记录
-        if index == 1:
+        if index == PAGE_LIBRARY:
             self.library_page.reload()
         # 打卡页自己在 showEvent 里刷新（跨过零点也算），这里不用再管
 
@@ -153,5 +164,30 @@ class MainWindow(QMainWindow):
     def _show_status(self, text: str) -> None:
         self.statusBar().showMessage(text, 5000)
 
+    # ------------------------------------------------- 托盘 / 退出相关
+    def set_minimize_to_tray(self, enabled: bool) -> None:
+        """有托盘时关窗口只是收起来；没有托盘就老老实实退出。"""
+        self._minimize_to_tray = bool(enabled)
 
-__all__ = ["MainWindow"]
+    def request_quit(self) -> None:
+        """真的退出（托盘菜单里点「退出」走这里）。"""
+        self._quitting = True
+        self.close()
+
+    def open_checkin_page(self) -> None:
+        """从提醒小窗/托盘跳过来：把窗口叫出来并切到打卡页。"""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self._nav.setCurrentRow(PAGE_CHECKIN)
+
+    def closeEvent(self, event):  # type: ignore[override]
+        if self._minimize_to_tray and not self._quitting:
+            event.ignore()
+            self.hide()
+            self.hidden_to_tray.emit()
+            return
+        super().closeEvent(event)
+
+
+__all__ = ["MainWindow", "PAGE_CAPTURE", "PAGE_LIBRARY", "PAGE_CHECKIN", "PAGE_UPLOAD"]

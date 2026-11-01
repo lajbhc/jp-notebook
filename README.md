@@ -34,11 +34,14 @@ jp-notebook/
       entry_fields.py     # 10 个字段的定义，录入页与编辑框共用
       upload_page.py      # 手机上传页：地址、二维码、收到的图、一键送去录入
       checkin_page.py     # 打卡页：连续天数、今日按钮、本月日历
+      tray.py             # 系统托盘：打开 / 去打卡 / 退出
+      reminder_popup.py   # 右下角提醒小窗（无边框置顶，不抢键盘焦点）
     services/    # 识别、打卡等业务门面
       entry_service.py    # 录入门面：图片落盘、表单校验、保存
       library_service.py  # 词库门面：查询/筛选/翻页/统计/删除
       upload_service.py   # 上传门面：启停服务、本机 IP、收图落盘、收件箱
       checkin_service.py  # 打卡门面：打卡幂等、连续天数、月历网格
+      reminder_service.py # 提醒判定：到点没有、今天提醒过没有、延后到几点
       recognizer.py       # 多模态识别
       errors.py           # 统一错误模型
     storage/     # SQLite 读写封装（db.py 建表，repository.py 增删改查）
@@ -175,6 +178,19 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 （今天还有机会不断）；昨天也没打就是断了，显示 0。这样第二天早上打开程序看到的数字
 不会突然掉到 0。
 
+它会在后台提醒你：
+
+1. 关掉主窗口只是收进托盘，程序还在跑（手机上传、到点提醒都照常），
+   托盘图标点一下就能叫回来，右键菜单里有「打开主窗口」「去打卡」「退出」
+2. 每天到 `REMINDER_TIME`（默认 21:00）右下角弹一个小窗，显示连续天数，
+   两个按钮：「现在去打卡」直接跳到打卡页，「10 分钟后再提醒」就延后十分钟
+3. 今天已经打过卡就不再提醒；点小窗右上角 × 等于今天先算了，今晚也不会再弹
+4. 真要退出请用托盘菜单里的「退出」——关窗口是退不掉的，这是有意的
+
+> 踩过的坑：置顶小窗还开着时直接 `app.quit()`，事件循环会卡住不返回（进程活着但窗口
+> 全没了）。所以退出路径统一先收掉小窗和托盘图标再退出，`AppShell._quit()` 和
+> `aboutToQuit` 两处都这么做，`verify_reminder_ui.py` 里也守住了这个约定。
+
 ### 4. 先用探针确认接口能用
 
 换 Key、换模型、换服务商之后，**先跑探针再开界面**，它会把 HTTP 状态码和
@@ -235,7 +251,7 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 | 4 | 词库页（列表 / 搜索 / 编辑 / 删除） | ✅ 完成 |
 | 5 | 手机局域网上传 | ✅ 完成 |
 | 6 | 每日打卡 | ✅ 完成 |
-| 7 | 托盘提醒 | ⬜ |
+| 7 | 托盘提醒 | ✅ 完成 |
 | 8 | 收尾（日志 / 测试 / 文档） | ⬜ |
 
 > 想到但暂时不做的功能（框选识别范围、孤儿图片清理、导出等）记在
@@ -257,6 +273,8 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 .\venv\Scripts\python.exe scripts\check_upload_page.py    # 阶段 5：用 node 跑手机页面里的 JS（缺 node 时跳过）
 .\venv\Scripts\python.exe scripts\verify_checkin.py       # 阶段 6：打卡幂等、连续天数、月历网格
 .\venv\Scripts\python.exe scripts\verify_checkin_ui.py    # 阶段 6：offscreen 点一遍打卡页
+.\venv\Scripts\python.exe scripts\verify_reminder.py      # 阶段 7：提醒到点/已打卡/延后/跨零点
+.\venv\Scripts\python.exe scripts\verify_reminder_ui.py   # 阶段 7：小窗、托盘、关窗进托盘、到点自动弹
 ```
 
 最后那条是给手机上传页里那段 JS 用的：它只在手机浏览器里执行，Python 的测试看不见它。
