@@ -73,7 +73,12 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
             "headers": dict(self.headers),
             "body": raw,
         }
-        status, content_type, body = self.server.route  # type: ignore[attr-defined]
+        route = self.server.route  # type: ignore[attr-defined]
+        if isinstance(route, list):
+            # 支持按顺序返回多个响应，用来测"第一次失败、重试成功"
+            status, content_type, body = route.pop(0)
+        else:
+            status, content_type, body = route
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -258,6 +263,24 @@ def main() -> int:
     server.route = (500, "text/plain", b"internal error")  # type: ignore[attr-defined]
     with use_settings(base):
         expect_error("500 提示服务端出错", ApiRequestFailed, lambda: recognizer.recognize(image, "word"), "服务端")
+
+    # 有些兼容端点不认 enable_thinking，会直接 400。代码应当去掉它重试一次。
+    strict_400 = (400, "application/json", b'{"error":"unknown parameter: enable_thinking"}')
+    server.route = [strict_400, openai_payload(good_json)]  # type: ignore[attr-defined]
+    with use_settings(base):
+        try:
+            retried = recognizer.recognize(image, "word")
+            check("端点不认 enable_thinking 时自动去掉参数重试", retried.word == "食べる", str(retried.word))
+        except Exception as exc:  # noqa: BLE001
+            check("端点不认 enable_thinking 时自动去掉参数重试", False, f"{type(exc).__name__}: {exc}")
+
+    server.route = [strict_400, strict_400]  # type: ignore[attr-defined]
+    with use_settings(base):
+        expect_error(
+            "重试后仍 400 才报错",
+            ApiRequestFailed,
+            lambda: recognizer.recognize(image, "word"),
+        )
 
     server.route = (200, "text/html", b"<html>hello</html>")  # type: ignore[attr-defined]
     with use_settings(base):

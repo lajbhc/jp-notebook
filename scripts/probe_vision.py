@@ -91,7 +91,7 @@ def main(argv: list[str]) -> int:
                 ],
             }
         ],
-        "max_tokens": 200,
+        "max_tokens": 1200,
     }
 
     print(f"\n== 请求 ==\n  POST {url}")
@@ -134,15 +134,30 @@ def main(argv: list[str]) -> int:
         print("  ✗ 响应不是 JSON，接口地址可能指向了别的服务。")
         return 1
 
-    try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        print("  ✗ 响应不是 OpenAI 兼容格式，返回里只有这些键: " + str(list(payload)[:8]))
+    choice = payload["choices"][0]
+    message = choice.get("message") or {}
+    content = message.get("content")
+    reasoning = message.get("reasoning_content") or ""
+    finish_reason = choice.get("finish_reason")
+    usage = payload.get("usage") or {}
+
+    print(f"  finish_reason : {finish_reason}")
+    print(f"  usage         : {usage}")
+    if isinstance(reasoning, str) and reasoning:
+        print(f"  思考过程      : {len(reasoning)} 字（已忽略，只用 content）")
+
+    if not isinstance(content, str) or not content.strip():
+        print("\n  ✗ 接口通了，但正文是空的。")
+        if finish_reason == "length":
+            print("    原因：这是思考型模型，输出额度被 reasoning_content 用光了。")
+            print("    处理：把请求里的 max_tokens 调大（本项目已设为 2000）。")
+        else:
+            print(f"    原因不明，finish_reason={finish_reason}。")
         return 1
 
     print(f"  ✓ 通了。模型对这张图的回答：{str(content)[:200]}")
     print("\n  → 换成真题照片再跑一次，确认它认得出日文：")
-    print(f"    .\\venv\\Scripts\\python.exe scripts\\probe_vision.py your_photo.jpg")
+    print("    .\\venv\\Scripts\\python.exe scripts\\probe_vision.py your_photo.jpg")
     return 0
 
 

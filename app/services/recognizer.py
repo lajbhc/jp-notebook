@@ -47,6 +47,15 @@ MAX_IMAGE_EDGE = 1600
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 # 小图不重新编码，避免二次压缩损失细节。
 KEEP_ORIGINAL_BYTES = 6 * 1024 * 1024
+# 输出额度。思考型模型（先输出 reasoning_content 再输出正文）会先把额度花在
+# 思考上，设小了正文会被截断成空字符串——这是实测踩到的坑，别往下调。
+MAX_TOKENS = 2000
+
+# 关闭思考的额外参数。实测这个端点支持 enable_thinking=False：
+#   开着：同一张图思考 939~3202 字不等，5~9 秒，且有时会把 max_tokens 吃光导致正文为空
+#   关掉：稳定 2.3~2.5 秒，不产生 reasoning token，正文一次成功
+# 换到不认这个参数的端点会返回 400，此时 recognize() 会自动去掉它重试一次。
+EXTRA_BODY: dict[str, Any] = {"enable_thinking": False}
 
 # 只有这些格式交给 Pillow 解码，其余一律按"打不开"处理。
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "BMP", "GIF", "TIFF"}
@@ -178,25 +187,60 @@ def build_entry(payload: dict[str, Any], entry_type: str, source_image: str = ""
 
 
 def _content_text(payload: dict[str, Any]) -> str:
-    """从 chat/completions 的返回里取出正文。"""
+    """从 chat/completions 的返回里取出正文。
+
+    注意：思考型模型会先输出 `reasoning_content`，正文放在 `content`。如果正文是
+    空的且 `finish_reason == "length"`，说明输出额度被思考过程吃光了——这不是模型
+    坏了，是我们的 max_tokens 给小了，所以单独给一句明确的提示，别让用户以为是自己
+    的图片有问题。
+    """
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
         raise ResponseNotJson(f"response has no choices: {list(payload)[:6]}")
 
-    message = choices[0].get("message") if isinstance(choices[0], dict) else None
-    content = message.get("content") if isinstance(message, dict) else None
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message")
+    message = message if isinstance(message, dict) else {}
+    finish_reason = choice.get("finish_reason")
 
+    content = message.get("content")
     if isinstance(content, list):
         # 少数接口把正文拆成 [{type: text, text: ...}] 的数组
         content = "".join(
             part.get("text", "") for part in content if isinstance(part, dict)
         )
+
     if not isinstance(content, str) or not content.strip():
-        raise ResponseNotJson(f"response content is empty: {str(content)[:120]}")
+        reasoning = message.get("reasoning_content") or ""
+        reasoning_len = len(reasoning) if isinstance(reasoning, str) else 0
+        detail = (
+            f"empty content; finish_reason={finish_reason}; "
+            f"reasoning_chars={reasoning_len}; usage={payload.get('usage')}"
+        )
+        if finish_reason == "length":
+            raise ResponseNotJson(
+                detail,
+                "模型把输出额度全用在思考过程上了，没能给出结果。重试一次；"
+                "如果反复出现，说明这个模型思考太长，建议换一个非思考的视觉模型。",
+            )
+        raise ResponseNotJson(detail)
+
     return content
 
 
 # --------------------------------------------------------------------- 调用
+def _post(
+    url: str, headers: dict[str, str], body: dict[str, Any], timeout: tuple[float, float]
+) -> requests.Response:
+    """发一次请求，把 requests 的异常翻译成本项目的错误类型。"""
+    try:
+        return requests.post(url, headers=headers, json=body, timeout=timeout)
+    except requests.Timeout as exc:
+        raise NetworkTimeout(f"timeout talking to {url}: {exc}") from exc
+    except requests.RequestException as exc:
+        raise ApiRequestFailed(None, f"{type(exc).__name__}: {exc}") from exc
+
+
 def recognize(
     image_path: str | Path,
     entry_type: str,
@@ -226,7 +270,8 @@ def recognize(
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 800,
+        "max_tokens": MAX_TOKENS,
+        **EXTRA_BODY,
     }
     headers = {
         "Authorization": f"Bearer {settings.api_key}",
@@ -234,12 +279,15 @@ def recognize(
     }
     url = f"{settings.base_url.rstrip('/')}/chat/completions"
 
-    try:
-        response = requests.post(url, headers=headers, json=request_body, timeout=timeout)
-    except requests.Timeout as exc:
-        raise NetworkTimeout(f"timeout talking to {url}: {exc}") from exc
-    except requests.RequestException as exc:
-        raise ApiRequestFailed(None, f"{type(exc).__name__}: {exc}") from exc
+    response = _post(url, headers, request_body, timeout)
+
+    # 有的 OpenAI 兼容端点不认识 enable_thinking，会直接 400。
+    # 这时候把额外参数去掉再试一次，不要让用户因为一个可选项就完全用不了识别。
+    if response.status_code == 400 and EXTRA_BODY:
+        fallback = {k: v for k, v in request_body.items() if k not in EXTRA_BODY}
+        retry = _post(url, headers, fallback, timeout)
+        if retry.status_code == 200:
+            response = retry
 
     if response.status_code != 200:
         raise ApiRequestFailed(response.status_code, _body_snippet(response))
