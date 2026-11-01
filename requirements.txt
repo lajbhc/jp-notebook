@@ -1,0 +1,52 @@
+# 日语错题本 —— Python 依赖
+#
+# 安装：
+#   python -m venv venv
+#   venv\Scripts\activate          (Windows)
+#   pip install -r requirements.txt
+#
+# 本机环境若有 Windows 沙箱/受限令牌导致 venv 创建失败，见 docs/venv-bootstrap.md。
+# 注意用 PySide6-Essentials 而非 PySide6：后者会连带 WebEngine / Addons / Pdf，
+# 装完 1GB+，本项目只用 QtCore / QtGui / QtWidgets。
+
+# ---- 桌面端 ----
+PySide6-Essentials==6.12.0
+
+# ---- 手机局域网上传服务 ----
+fastapi==0.162.0
+uvicorn==0.54.0
+python-multipart==0.0.33
+
+# ---- 图片处理与配置 ----
+pillow==13.0.0
+python-dotenv==1.2.4
+qrcode==8.2
+
+# ---- 调用多模态 API ----
+requests==2.34.2
+
+# ---- 测试 ----
+pytest==9.2.0
+
+# ---- 以下是上述包的传递依赖（pip freeze 固定版本，保证可复现）----
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.10.23
+charset-normalizer==3.5.2
+click==8.5.0
+colorama==0.4.6
+h11==0.16.0
+idna==3.20
+iniconfig==2.3.1
+opentelemetry-api==1.45.2
+packaging==26.3
+pluggy==1.7.0
+pydantic==2.14.2
+pydantic_core==2.50.2
+Pygments==2.21.0
+shiboken6==6.12.0
+starlette==1.10.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+urllib3==2.8.0
