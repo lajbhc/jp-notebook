@@ -26,8 +26,9 @@ jp-notebook/
   app/
     ui/          # PySide6 窗口、托盘、提醒小窗
     services/    # 识别、打卡等业务门面
-    storage/     # SQLite 读写封装
+    storage/     # SQLite 读写封装（db.py 建表，repository.py 增删改查）
     prompts/     # 识别提示词模板
+    models.py    # 数据模型 Entry（生词与语法共用）
     config.py    # 路径、环境变量、模型名
     main.py      # 桌面端入口
   server/        # 手机局域网上传服务
@@ -103,7 +104,7 @@ copy .env.example .env
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 0 | 项目骨架与配置 | ✅ 完成 |
-| 1 | 存储层（SQLite） | ⬜ |
+| 1 | 存储层（SQLite） | ✅ 完成 |
 | 2 | 识别服务 + 接口探针 | ⬜ |
 | 3 | 录入页（上传 → 校正 → 保存） | ⬜ |
 | 4 | 词库页（列表 / 搜索 / 编辑 / 删除） | ⬜ |
