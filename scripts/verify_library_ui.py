@@ -304,6 +304,38 @@ def main() -> int:
     check("选中的就是它", page.current_entry().id == second.id)
     check("不存在的 id 返回 False", page.select_entry(999999) is False)
 
+    # ---------------------------------------------------------------- 11
+    print("\n== 11. 列宽可拖且记得住 ==")
+    from PySide6.QtWidgets import QHeaderView
+
+    from app.ui import window_state
+
+    check("表头六列都能拖",
+          page.table.horizontalHeader().sectionResizeMode(1) == QHeaderView.Interactive,
+          str(page.table.horizontalHeader().sectionResizeMode(1)))
+    check("最后一列不自动拉伸", not page.table.horizontalHeader().stretchLastSection())
+
+    page.table.setColumnWidth(1, 260)
+    app.processEvents()
+    check("拖动后列宽生效", page.table.columnWidth(1) == 260, str(page.table.columnWidth(1)))
+    page._persist_widths()
+    saved = window_state.load_library_columns() or []
+    check("列宽写进了 ui.json", saved[:2] == [58, 260], str(saved))
+
+    from app.ui.library_page import LibraryPage as _LibraryPage
+
+    fresh = _LibraryPage()
+    fresh.show()
+    app.processEvents()
+    check("新开的页面读回上次的列宽", fresh.table.columnWidth(1) == 260,
+          str(fresh.table.columnWidth(1)))
+    widths = [fresh.table.columnWidth(i) for i in range(6)]
+    check("宽度不足时由释义列补齐（右边不留空白）",
+          sum(widths) >= fresh.table.viewport().width() - 2,
+          f"{sum(widths)} vs {fresh.table.viewport().width()}")
+    fresh.close()
+    fresh.deleteLater()
+
     print(f"\n===== 通过 {_passed} 项，失败 {_failed} 项 =====")
     if _failed == 0:
         print("词库页界面验收全部通过。")

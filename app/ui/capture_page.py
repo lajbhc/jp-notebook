@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
     QFileDialog,
-    QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -36,22 +37,16 @@ from app.logger import get_logger
 from app.services import entry_service
 from app.services.entry_service import EntryValidationError, SaveFailed
 from app.services.errors import RecognitionError
-from app.ui import entry_fields
+from app.ui import entry_fields, style
 from app.ui.crop_dialog import CropDialog
 from app.ui.crop_view import CropView
 from app.ui.recognition_worker import RecognitionWorker
 
 _IMAGE_FILTER = "图片 (*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tif *.tiff)"
 
-_PREVIEW_SIZE = (300, 220)
+_PREVIEW_MIN = (300, 220)   # 预览的最小尺寸；实际会随窗口拉伸（见 QSplitter）
 
 _PLACEHOLDER = "还没有选择图片\n\n点「选择图片」，或把图片拖到这里"
-
-_BANNER_STYLES = {
-    "error": "border: 1px solid #e0a1a1; background: #fdecec; color: #a12622;",
-    "ok": "border: 1px solid #a1d8b2; background: #eaf7ee; color: #1f6b3a;",
-    "info": "border: 1px solid #a8c3e8; background: #eef3fb; color: #1f4e79;",
-}
 
 # (字段名, 中文标签, 只属于哪一类；None 表示两类共用)
 # 字段清单只有 entry_fields.FIELDS 一份，编辑对话框用同一份，避免标签漂移。
@@ -83,11 +78,11 @@ class CapturePage(QWidget):
         root.setSpacing(10)
 
         title = QLabel("录入一条记录")
-        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        title.setStyleSheet(style.TITLE)
         root.addWidget(title)
 
         hint = QLabel("选图 → 识别 → 对照原图改正 → 保存。识别结果只是草稿。")
-        hint.setStyleSheet("font-size: 12px; color: #666;")
+        hint.setStyleSheet(style.HINT)
         root.addWidget(hint)
 
         self._banner = QLabel()
@@ -97,11 +92,21 @@ class CapturePage(QWidget):
 
         root.addLayout(self._build_type_row())
 
-        body = QHBoxLayout()
-        body.setSpacing(18)
-        body.addLayout(self._build_image_column(), 0)
-        body.addLayout(self._build_form_column(), 1)
-        root.addLayout(body, 1)
+        # 预览和表单分成可拖动的两栏：大屏上把预览拉大能看清字，小屏上也能各自压窄
+        body = QSplitter(Qt.Horizontal)
+        body.setChildrenCollapsible(False)
+        body.setHandleWidth(8)
+        left = QWidget()
+        self._build_image_column(QVBoxLayout(left))
+        right = QWidget()
+        self._build_form_column(QVBoxLayout(right))
+        body.addWidget(left)
+        body.addWidget(right)
+        body.setStretchFactor(0, 4)
+        body.setStretchFactor(1, 5)
+        body.setSizes([400, 460])
+        self._body_splitter = body
+        root.addWidget(body, 1)
 
     def _build_type_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -125,14 +130,14 @@ class CapturePage(QWidget):
 
     def _type_hint(self) -> QLabel:
         self._type_note = QLabel()
-        self._type_note.setStyleSheet("font-size: 12px; color: #888;")
+        self._type_note.setStyleSheet(style.HINT_FAINT)
         return self._type_note
 
-    def _build_image_column(self) -> QVBoxLayout:
-        column = QVBoxLayout()
-        column.setSpacing(8)
+    def _build_image_column(self, column: QVBoxLayout) -> None:
+        column.setSpacing(style.ROW_GAP)
+        column.setContentsMargins(0, 0, 0, 0)
 
-        self._preview = CropView(_PLACEHOLDER, size=_PREVIEW_SIZE)
+        self._preview = CropView(_PLACEHOLDER, size=_PREVIEW_MIN, fixed=False)
         self._preview.file_dropped.connect(self._load_image)
         self._preview.selection_changed.connect(self._on_selection_changed)
         self._preview.double_clicked.connect(self._open_crop_dialog)
@@ -143,7 +148,7 @@ class CapturePage(QWidget):
 
         self._crop_label = QLabel("")
         self._crop_label.setWordWrap(True)
-        self._crop_label.setStyleSheet("font-size: 11px; color: #2f6f9f;")
+        self._crop_label.setStyleSheet(style.ACCENT_TEXT)
         column.addWidget(self._crop_label)
 
         crop_row = QHBoxLayout()
@@ -162,46 +167,78 @@ class CapturePage(QWidget):
 
         self._image_label = QLabel("")
         self._image_label.setWordWrap(True)
-        self._image_label.setStyleSheet("font-size: 11px; color: #888;")
+        self._image_label.setStyleSheet(style.CAPTION)
         column.addWidget(self._image_label)
 
         pick = QPushButton("选择图片")
+        pick.setMinimumHeight(style.BUTTON_HEIGHT)
         pick.clicked.connect(self._pick_image)
         column.addWidget(pick)
 
         self._recognize_button = QPushButton("开始识别")
+        self._recognize_button.setMinimumHeight(style.BUTTON_HEIGHT)
         self._recognize_button.setEnabled(False)
         self._recognize_button.clicked.connect(self._start_recognition)
         column.addWidget(self._recognize_button)
 
         clear = QPushButton("清空重来")
+        clear.setMinimumHeight(style.BUTTON_HEIGHT)
         clear.clicked.connect(lambda: self._reset_form(keep_banner=False))
         column.addWidget(clear)
 
-        column.addStretch(1)
-        return column
+        self._clear_crop_button.setMinimumHeight(style.BUTTON_HEIGHT)
+        self._zoom_button.setMinimumHeight(style.BUTTON_HEIGHT)
 
-    def _build_form_column(self) -> QVBoxLayout:
-        column = QVBoxLayout()
-        column.setSpacing(10)
+    def _build_form_column(self, column: QVBoxLayout) -> None:
+        column.setSpacing(style.ROW_GAP)
+        column.setContentsMargins(0, 0, 0, 0)
 
         form_widget = QWidget()
-        form = QFormLayout(form_widget)
+        # 用 QGridLayout 而不是 QFormLayout：读音/词性是短词，挤一行能少滚动一屏；
+        # 其余字段横跨整行，长日语句子有地方显示。
+        form = QGridLayout(form_widget)
         form.setContentsMargins(0, 0, 6, 0)
-        form.setHorizontalSpacing(12)
-        form.setVerticalSpacing(8)
-        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(style.ROW_GAP)
+        form.setColumnMinimumWidth(0, 56)
+        form.setColumnMinimumWidth(2, 56)
+        form.setColumnStretch(1, 1)
+        form.setColumnStretch(3, 1)
 
+        row = 0
+        half_open = False
         for name, label, _group in _FIELDS:
             if name == "note":
                 editor: QLineEdit | QPlainTextEdit = QPlainTextEdit()
-                editor.setFixedHeight(64)
+                editor.setMinimumHeight(style.NOTE_MIN_HEIGHT)
+                editor.setMaximumHeight(style.NOTE_MAX_HEIGHT)
             else:
                 editor = QLineEdit()
                 editor.setClearButtonEnabled(True)
             self._editors[name] = editor
-            form.addRow(label, editor)
+
+            name_label = QLabel(label)
+            name_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+            if name == "part_of_speech" and half_open:
+                # 接着"读音"那一行的右半边放
+                form.addWidget(name_label, row, 2)
+                form.addWidget(editor, row, 3)
+                row += 1
+                half_open = False
+                continue
+            if name == "reading":
+                form.addWidget(name_label, row, 0)
+                form.addWidget(editor, row, 1)
+                half_open = True  # 这一行右半边留给词性
+                continue
+            form.addWidget(name_label, row, 0)
+            form.addWidget(editor, row, 1, 1, 3)
+            row += 1
+
+        # 多出来的高度给"备注下面那一行"：备注框到 160 就够，再高就是浪费空间，
+        # 让空白留在底部，字段保持紧凑（否则备注会被拉成一整屏）。
+        form.setRowStretch(row, 1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -211,16 +248,16 @@ class CapturePage(QWidget):
 
         bottom = QHBoxLayout()
         self._status = QLabel("")
-        self._status.setStyleSheet("font-size: 12px; color: #666;")
+        self._status.setStyleSheet(style.HINT)
         bottom.addWidget(self._status, 1)
 
         self._save_button = QPushButton("保存到词库")
-        self._save_button.setMinimumWidth(110)
+        self._save_button.setMinimumWidth(120)
+        self._save_button.setMinimumHeight(style.BUTTON_HEIGHT)
+        self._save_button.setStyleSheet(style.PRIMARY_BUTTON)
         self._save_button.clicked.connect(self._save)
         bottom.addWidget(self._save_button)
         column.addLayout(bottom)
-
-        return column
 
     # ------------------------------------------------------------- 类型
     def current_type(self) -> str:
@@ -428,9 +465,7 @@ class CapturePage(QWidget):
 
     def _show_banner(self, text: str, level: str = "info") -> None:
         self._banner.setText(text)
-        self._banner.setStyleSheet(
-            "padding: 9px 12px; border-radius: 6px; " + _BANNER_STYLES.get(level, "")
-        )
+        self._banner.setStyleSheet(style.banner_qss(level))
         self._banner.setVisible(True)
 
     def _reset_form(self, *, keep_banner: bool = True, keep_image: bool = False) -> None:

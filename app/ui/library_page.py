@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 
-from PySide6.QtCore import QDate, Qt, Signal
+from PySide6.QtCore import QDate, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -38,10 +38,9 @@ from app.services import library_service
 from app.services.library_service import FilterInvalid, LibraryFailed
 from app.ui.entry_edit_dialog import EntryEditDialog
 from app.ui.entry_table_model import COLUMN_WIDTHS, EntryTableModel
+from app.ui import style, window_state
 
 _DATE_FORMAT = "yyyy-MM-dd"
-
-_EMPTY_STYLE = "font-size: 13px; color: #888;"
 
 
 class LibraryPage(QWidget):
@@ -53,8 +52,48 @@ class LibraryPage(QWidget):
         super().__init__(parent)
         self._page = 1
         self._page_size = library_service.DEFAULT_PAGE_SIZE
+        self._filling = False
         self._build_ui()
         self.reload()
+
+    # ------------------------------------------------------------- 列宽
+    def _restored_widths(self) -> list[int]:
+        """上次拖好的列宽；没存过或存坏了就用默认值。"""
+        saved = window_state.load_library_columns()
+        widths = list(COLUMN_WIDTHS)
+        if saved is None:
+            return widths
+        for index, width in enumerate(saved[: len(widths)]):
+            widths[index] = width
+        return widths
+
+    def _on_section_resized(self, *_args: object) -> None:
+        if self._filling:
+            return  # 自动补宽不算用户拖动，别把补出来的宽度写进配置
+        self._column_timer.start()
+
+    def _persist_widths(self) -> None:
+        widths = [self.table.columnWidth(i) for i in range(len(COLUMN_WIDTHS))]
+        window_state.save_library_columns(widths)
+
+    def _fill_extra_width(self) -> None:
+        """列宽总和小于表格宽度时，多出来的都给释义列，右边不留一条空白。"""
+        self._filling = True
+        try:
+            total = sum(self.table.columnWidth(i) for i in range(len(COLUMN_WIDTHS)))
+            extra = self.table.viewport().width() - total
+            if extra > 0:
+                self.table.setColumnWidth(3, self.table.columnWidth(3) + extra)
+        finally:
+            self._filling = False
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 的命名
+        super().resizeEvent(event)
+        self._fill_extra_width()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt 的命名
+        super().showEvent(event)
+        self._fill_extra_width()
 
     # ------------------------------------------------------------- 界面
     def _build_ui(self) -> None:
@@ -67,10 +106,7 @@ class LibraryPage(QWidget):
 
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet(
-            "border: 1px solid #e0a1a1; background: #fdecec; color: #a12622;"
-            "padding: 6px 10px; font-size: 12px;"
-        )
+        self.error_label.setStyleSheet(style.field_error_qss(compact=True))
         self.error_label.hide()
         root.addWidget(self.error_label)
 
@@ -82,11 +118,11 @@ class LibraryPage(QWidget):
         row.setSpacing(10)
 
         title = QLabel("词库")
-        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        title.setStyleSheet(style.TITLE)
         row.addWidget(title)
 
         self.stats_label = QLabel("")
-        self.stats_label.setStyleSheet("font-size: 12px; color: #777;")
+        self.stats_label.setStyleSheet(style.HINT_DIM)
         row.addWidget(self.stats_label)
         row.addStretch(1)
 
@@ -167,11 +203,16 @@ class LibraryPage(QWidget):
         self.table.doubleClicked.connect(lambda _index: self._edit_selected())
 
         header = self.table.horizontalHeader()
-        for column, width in enumerate(COLUMN_WIDTHS):
+        header.setSectionResizeMode(QHeaderView.Interactive)  # 六列都能拖，宽度存进 ui.json
+        header.setStretchLastSection(False)
+        widths = self._restored_widths()
+        for column, width in enumerate(widths):
             self.table.setColumnWidth(column, width)
-        # 释义、例句内容最长，让它们吃掉剩余宽度
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
-        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.sectionResized.connect(self._on_section_resized)
+        self._column_timer = QTimer(self)
+        self._column_timer.setSingleShot(True)
+        self._column_timer.setInterval(400)
+        self._column_timer.timeout.connect(self._persist_widths)
 
         # 选中变化要立刻反映到「编辑 / 删除」按钮的可用状态
         self.table.selectionModel().selectionChanged.connect(lambda *_: self._sync_buttons())
@@ -183,7 +224,7 @@ class LibraryPage(QWidget):
         self.empty_label = QLabel("")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setWordWrap(True)
-        self.empty_label.setStyleSheet(_EMPTY_STYLE)
+        self.empty_label.setStyleSheet(style.EMPTY)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.table)

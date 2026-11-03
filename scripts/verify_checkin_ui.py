@@ -227,7 +227,28 @@ def main() -> int:
     check("恢复后能重新读到状态", page.streak_label.text() == "1", page.streak_label.text())
 
     # ---------------------------------------------------------------- 8
-    print("\n== 8. 主窗口里的打卡页 ==")
+    print("\n== 8. 左右两栏排版 ==")
+    from PySide6.QtCore import QPoint
+
+    page.resize(900, 620)
+    page.show()
+    app.processEvents()
+
+    def at(widget) -> QPoint:
+        return widget.mapTo(page, QPoint(0, 0))
+
+    calendar_x = at(page.month_label).x()
+    summary_x = at(page.streak_label).x()
+    check("连续天数在日历右侧", summary_x > calendar_x, f"{summary_x} vs {calendar_x}")
+    check("备注框在按钮上方", at(page.note_edit).y() < at(page.check_button).y(),
+          f"{at(page.note_edit).y()} vs {at(page.check_button).y()}")
+    check("打卡按钮够宽", page.check_button.width() >= 140, str(page.check_button.width()))
+    check("打卡按钮是主色样式", "#2f6f9f" in page.check_button.styleSheet(),
+          page.check_button.styleSheet()[:40])
+    check("日历仍然是 7 列", page.grid.columnCount() == 7, str(page.grid.columnCount()))
+
+    # ---------------------------------------------------------------- 9
+    print("\n== 9. 主窗口里的打卡页 ==")
     settings = config.Settings(
         api_key="test-key",
         base_url="https://example.invalid/v1",
@@ -249,7 +270,7 @@ def main() -> int:
     window.close()
 
     # ---------------------------------------------------------------- 收尾
-    print("\n== 9. 收尾 ==")
+    print("\n== 10. 收尾 ==")
     page.close()
     app.processEvents()
     app.quit()

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QImageReader, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QSizePolicy, QWidget
 
 _HINT_TEXT = "拖动框选 · 双击放大 · 右键取消"
 
@@ -37,6 +37,7 @@ class CropView(QWidget):
         parent: QWidget | None = None,
         *,
         size: tuple[int, int] = (300, 220),
+        fixed: bool = True,
     ) -> None:
         super().__init__(parent)
         self._placeholder = placeholder
@@ -48,7 +49,13 @@ class CropView(QWidget):
         self._origin: QPoint | None = None
         self._dragging = False
 
-        self.setFixedSize(QSize(*size))
+        # fixed=True：老行为，用来保证 300x220 这种小预览不被布局撑开；
+        # fixed=False：跟着窗口拉伸（录入页现在用这个，大屏上能看清更多字）
+        if fixed:
+            self.setFixedSize(QSize(*size))
+        else:
+            self.setMinimumSize(QSize(*size))
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setCursor(Qt.CrossCursor)
@@ -187,6 +194,16 @@ class CropView(QWidget):
             min(max(point.x(), rect.left()), rect.right()),
             min(max(point.y(), rect.top()), rect.bottom()),
         )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 的命名
+        # 拉窗口时重新算 letterbox，并把框按归一化比例挪到新位置
+        super().resizeEvent(event)
+        box = self.selection()
+        self._rebuild()
+        if box is None:
+            self._selection = None
+        else:
+            self.set_selection(box)
 
     # ------------------------------------------------------------- 绘制
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 的命名

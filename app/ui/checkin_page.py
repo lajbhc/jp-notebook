@@ -25,14 +25,9 @@ from PySide6.QtWidgets import (
 from app.logger import get_logger
 from app.services import checkin_service
 from app.services.checkin_service import CheckinFailed, Status
+from app.ui import style
 
 _WEEKDAYS = ("一", "二", "三", "四", "五", "六", "日")
-
-_BANNER_STYLES = {
-    "error": "border: 1px solid #e0a1a1; background: #fdecec; color: #a12622;",
-    "ok": "border: 1px solid #a9d5b0; background: #eef8f0; color: #1f6f36;",
-    "info": "border: 1px solid #a8c4e0; background: #eef4fb; color: #1f4f7a;",
-}
 
 _CELL_BASE = "min-width: 34px; min-height: 32px; font-size: 12px;"
 _CELL_CHECKED = "background: #2f6f9f; color: #ffffff; font-weight: bold; border-radius: 4px;"
@@ -58,31 +53,44 @@ class CheckinPage(QWidget):
     # ------------------------------------------------------------- 界面
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(style.PAGE_MARGIN, 20, style.PAGE_MARGIN, style.PAGE_MARGIN)
+        root.setSpacing(style.SECTION_GAP)
 
         title = QLabel("每日打卡")
-        title.setStyleSheet("font-size: 17px; font-weight: bold;")
+        title.setStyleSheet(style.TITLE_SMALL)
         root.addWidget(title)
 
         hint = QLabel("学完一点就来点一下。断了不丢人，重点是第二天还回来。")
-        hint.setStyleSheet("font-size: 12px; color: #777;")
+        hint.setStyleSheet(style.HINT_DIM)
         root.addWidget(hint)
 
-        root.addLayout(self._build_summary())
-        root.addLayout(self._build_action())
+        # 左右两栏：左边日历，右边打卡动作。以前单栏堆下来，日历下面会剩一大片空白。
+        body = QHBoxLayout()
+        body.setSpacing(style.SECTION_GAP)
+
+        left = QVBoxLayout()
+        left.setSpacing(style.TIGHT_GAP)
+        left.addLayout(self._build_calendar())
+        self.progress_label = QLabel("")
+        self.progress_label.setStyleSheet(style.HINT)
+        left.addWidget(self.progress_label)
+        left.addStretch(1)
+        body.addLayout(left, 3)
+
+        right = QVBoxLayout()
+        right.setSpacing(style.SECTION_GAP)
+        right.addLayout(self._build_summary())
+        right.addLayout(self._build_action())
 
         self.banner = QLabel("")
         self.banner.setWordWrap(True)
         self.banner.hide()
-        root.addWidget(self.banner)
+        right.addWidget(self.banner)
 
-        root.addLayout(self._build_calendar())
-        root.addStretch(1)
+        right.addStretch(1)
+        body.addLayout(right, 2)
 
-        self.progress_label = QLabel("")
-        self.progress_label.setStyleSheet("font-size: 12px; color: #666;")
-        root.addWidget(self.progress_label)
+        root.addLayout(body, 1)
 
     def _build_summary(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -97,32 +105,31 @@ class CheckinPage(QWidget):
         side = QVBoxLayout()
         side.setSpacing(0)
         self.streak_text_label = QLabel("还没有连续记录")
-        self.streak_text_label.setStyleSheet("font-size: 13px; color: #444;")
+        self.streak_text_label.setStyleSheet(style.BODY)
         self.today_label = QLabel("今天还没打卡")
-        self.today_label.setStyleSheet("font-size: 12px; color: #888;")
+        self.today_label.setStyleSheet(style.HINT_FAINT)
         side.addWidget(self.streak_text_label)
         side.addWidget(self.today_label)
         row.addLayout(side)
         row.addStretch(1)
         return row
 
-    def _build_action(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(10)
+    def _build_action(self) -> QVBoxLayout:
+        column = QVBoxLayout()
+        column.setSpacing(style.ROW_GAP)
 
         self.note_edit = QLineEdit()
         self.note_edit.setPlaceholderText("今天学了什么（可不填）")
         self.note_edit.setClearButtonEnabled(True)
-        self.note_edit.setMinimumHeight(38)  # 和右边的按钮差不多高，看着才是一行
-        row.addWidget(self.note_edit, 1)
+        self.note_edit.setMinimumHeight(34)
+        column.addWidget(self.note_edit)
 
         self.check_button = QPushButton("今日学习完成")
         self.check_button.setMinimumHeight(40)
-        self.check_button.setMinimumWidth(150)
-        self.check_button.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self.check_button.setStyleSheet(style.PRIMARY_BUTTON + "QPushButton { font-size: 14px; }")
         self.check_button.clicked.connect(self._check)
-        row.addWidget(self.check_button)
-        return row
+        column.addWidget(self.check_button)
+        return column
 
     def _build_calendar(self) -> QVBoxLayout:
         box = QVBoxLayout()
@@ -152,7 +159,7 @@ class CheckinPage(QWidget):
         for name in _WEEKDAYS:
             label = QLabel(name)
             label.setAlignment(Qt.AlignCenter)
-            label.setStyleSheet("font-size: 11px; color: #888;")
+            label.setStyleSheet(style.CAPTION)
             weekdays.addWidget(label)
         box.addLayout(weekdays)
 
@@ -253,8 +260,7 @@ class CheckinPage(QWidget):
             self.month_label.setText(self.month_label.text() + "（含今天）")
 
     def _show_banner(self, text: str, level: str = "info") -> None:
-        style = _BANNER_STYLES.get(level, _BANNER_STYLES["info"])
-        self.banner.setStyleSheet(f"{style} padding: 6px 10px; font-size: 12px;")
+        self.banner.setStyleSheet(style.banner_qss(level, compact=True))
         self.banner.setText(text)
         self.banner.show()
 

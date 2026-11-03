@@ -28,12 +28,7 @@ from PySide6.QtWidgets import (
 from app import config
 from app.services import entry_service, upload_service
 from app.services.upload_service import UploadFailed
-
-_BANNER_STYLES = {
-    "error": "border: 1px solid #e0a1a1; background: #fdecec; color: #a12622;",
-    "ok": "border: 1px solid #a1d8b2; background: #eaf7ee; color: #1f6b3a;",
-    "info": "border: 1px solid #a8c3e8; background: #eef3fb; color: #1f4e79;",
-}
+from app.ui import style
 
 _QR_SIZE = 232
 
@@ -84,11 +79,11 @@ class UploadPage(QWidget):
     # ------------------------------------------------------------- 构建界面
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(10)
+        root.setContentsMargins(style.PAGE_MARGIN, 18, style.PAGE_MARGIN, 16)
+        root.setSpacing(style.SECTION_GAP)
 
         title = QLabel("手机上传")
-        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        title.setStyleSheet(style.TITLE)
         root.addWidget(title)
 
         hint = QLabel(
@@ -96,7 +91,7 @@ class UploadPage(QWidget):
             "第一次启动时 Windows 可能弹防火墙提示，选「允许」即可（只允许本地网络）。"
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("font-size: 12px; color: #666;")
+        hint.setStyleSheet(style.HINT)
         root.addWidget(hint)
 
         self._banner = QLabel()
@@ -105,7 +100,7 @@ class UploadPage(QWidget):
         root.addWidget(self._banner)
 
         body = QHBoxLayout()
-        body.setSpacing(20)
+        body.setSpacing(style.SECTION_GAP)
         body.addWidget(self._build_left_column(), 0)
         body.addWidget(self._build_right_column(), 1)
         root.addLayout(body, 1)
@@ -118,13 +113,15 @@ class UploadPage(QWidget):
         panel.setFixedWidth(320)
 
         caption = QLabel("在手机浏览器里打开")
-        caption.setStyleSheet("font-size: 12px; color: #888;")
+        caption.setStyleSheet(style.HINT_FAINT)
         column.addWidget(caption)
 
         self.url_label = QLabel("服务未启动")
         self.url_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.url_label.setWordWrap(True)
-        self.url_label.setStyleSheet("font-size: 15px; font-weight: 600;")
+        self.url_label.setStyleSheet(
+            "font-family: Consolas, 'Courier New', monospace; font-size: 15px; font-weight: 600;"
+        )
         column.addWidget(self.url_label)
 
         self.qr_label = QLabel("服务启动后显示二维码")
@@ -136,12 +133,15 @@ class UploadPage(QWidget):
         column.addWidget(self.qr_label)
 
         buttons = QHBoxLayout()
-        buttons.setSpacing(8)
+        buttons.setSpacing(style.TIGHT_GAP)
         self.start_button = QPushButton("启动服务")
+        self.start_button.setMinimumHeight(style.BUTTON_HEIGHT)
         self.start_button.clicked.connect(self._start)
         self.stop_button = QPushButton("停止服务")
+        self.stop_button.setMinimumHeight(style.BUTTON_HEIGHT)
         self.stop_button.clicked.connect(self._stop)
         self.copy_button = QPushButton("复制地址")
+        self.copy_button.setMinimumHeight(style.BUTTON_HEIGHT)
         self.copy_button.clicked.connect(self._copy_url)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
@@ -150,7 +150,7 @@ class UploadPage(QWidget):
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("font-size: 12px; color: #666;")
+        self.status_label.setStyleSheet(style.HINT)
         column.addWidget(self.status_label)
 
         column.addStretch(1)
@@ -164,7 +164,7 @@ class UploadPage(QWidget):
 
         head = QHBoxLayout()
         self.count_label = QLabel("还没收到图片")
-        self.count_label.setStyleSheet("font-size: 13px; font-weight: 600;")
+        self.count_label.setStyleSheet(style.BODY_BOLD)
         head.addWidget(self.count_label, 1)
         self.use_button = QPushButton("用这张图去录入")
         self.use_button.setMinimumWidth(130)
@@ -182,7 +182,7 @@ class UploadPage(QWidget):
 
         note = QLabel("收到的是原图，点「用这张图去录入」会跳到录入页并自动填好图片。")
         note.setWordWrap(True)
-        note.setStyleSheet("font-size: 12px; color: #888;")
+        note.setStyleSheet(style.HINT_FAINT)
         column.addWidget(note)
         return panel
 
@@ -312,9 +312,7 @@ class UploadPage(QWidget):
     # ------------------------------------------------------------- 杂项
     def _show_banner(self, text: str, level: str = "info") -> None:
         self._banner.setText(text)
-        self._banner.setStyleSheet(
-            "padding: 9px 12px; border-radius: 6px; " + _BANNER_STYLES.get(level, "")
-        )
+        self._banner.setStyleSheet(style.banner_qss(level))
         self._banner.setVisible(True)
 
 

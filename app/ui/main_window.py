@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -22,13 +23,15 @@ from PySide6.QtWidgets import (
 )
 
 from app import config
+from app.ui import style, window_state
 from app.ui.capture_page import CapturePage
 from app.ui.checkin_page import CheckinPage
 from app.ui.library_page import LibraryPage
 from app.ui.upload_page import UploadPage
 
 WINDOW_TITLE = "日语错题本"
-WINDOW_SIZE = (1000, 720)
+WINDOW_SIZE = style.DEFAULT_WINDOW_SIZE
+MIN_WINDOW_SIZE = style.MIN_WINDOW_SIZE
 
 # 导航栏里各页的位置，别处（托盘、提醒）要跳页时用这些常量而不是写死数字
 PAGE_CAPTURE = 0
@@ -45,7 +48,7 @@ def _placeholder_page(title: str, detail: str) -> QWidget:
     layout.setSpacing(10)
 
     heading = QLabel(title)
-    heading.setStyleSheet("font-size: 17px; font-weight: 600;")
+    heading.setStyleSheet(style.TITLE_SMALL)
     layout.addWidget(heading)
 
     note = QLabel(detail)
@@ -67,7 +70,8 @@ class MainWindow(QMainWindow):
         self._quitting = False
 
         self.setWindowTitle(WINDOW_TITLE)
-        self.resize(*WINDOW_SIZE)
+        self.setMinimumSize(*MIN_WINDOW_SIZE)
+        self.resize(*self._restore_size())
 
         central = QWidget()
         outer = QVBoxLayout(central)
@@ -90,6 +94,34 @@ class MainWindow(QMainWindow):
         # setCurrentRow(0) 在建栈之前调用，那时信号还没接上，这里补一次同步标题
         self._on_nav_changed(self._nav.currentRow())
 
+    # ------------------------------------------------------------- 窗口大小记忆
+    def _restore_size(self) -> tuple[int, int]:
+        """上次关窗口时的尺寸；没有记录、记录坏了、被改成离谱值都回到默认。
+
+        比最小尺寸还小的一律按最小尺寸，免得留下一个挤成一团、又拖不大的窗口。
+        """
+        saved = window_state.load_window_state()
+        width = saved.get("width", WINDOW_SIZE[0])
+        height = saved.get("height", WINDOW_SIZE[1])
+        try:
+            width = int(width)
+            height = int(height)
+        except (TypeError, ValueError):
+            return WINDOW_SIZE
+        width = max(width, MIN_WINDOW_SIZE[0])
+        height = max(height, MIN_WINDOW_SIZE[1])
+        # 换过显示器之后旧尺寸可能比屏幕还大，收回到可用范围内
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            width = min(width, available.width())
+            height = min(height, available.height())
+        return width, height
+
+    def _save_geometry(self) -> None:
+        frame = self.frameGeometry()
+        window_state.save_window_state(self.width(), self.height(), frame.x(), frame.y())
+
     # ------------------------------------------------------------- 构建
     def _build_config_banner(self) -> QLabel | None:
         if self._settings.recognition_ready:
@@ -100,19 +132,13 @@ class MainWindow(QMainWindow):
             f"请在项目根目录的 .env 里填写后重启程序，可参考 .env.example。"
         )
         label.setWordWrap(True)
-        label.setStyleSheet(
-            "padding: 10px 16px; border-bottom: 1px solid #e0b252;"
-            "background: #fdf6e3; color: #7a5a00; font-size: 12px;"
-        )
+        label.setStyleSheet(style.CONFIG_BANNER)
         return label
 
     def _build_nav(self) -> QWidget:
         self._nav = QListWidget()
-        self._nav.setFixedWidth(132)
-        self._nav.setStyleSheet(
-            "QListWidget { border: none; border-right: 1px solid #e6e6e6; padding-top: 8px; }"
-            "QListWidget::item { padding: 10px 14px; }"
-        )
+        self._nav.setFixedWidth(style.NAV_WIDTH)
+        self._nav.setStyleSheet(style.NAV_QSS)
         for title in ("录入", "词库", "打卡", "手机上传"):
             QListWidgetItem(title, self._nav)
         self._nav.setCurrentRow(0)
@@ -182,6 +208,7 @@ class MainWindow(QMainWindow):
         self._nav.setCurrentRow(PAGE_CHECKIN)
 
     def closeEvent(self, event):  # type: ignore[override]
+        self._save_geometry()
         if self._minimize_to_tray and not self._quitting:
             event.ignore()
             self.hide()

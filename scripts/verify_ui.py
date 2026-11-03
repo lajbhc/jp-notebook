@@ -20,7 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PIL import Image
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QSize, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QLabel
 
 from app import config, models
@@ -262,9 +262,45 @@ def main() -> int:
     latest = repo.search(limit=1)[0]
     check("保存时去掉了首尾空格", latest.word == "静か", latest.word)
 
-    # ---------------------------------------------------------------- 收尾
+    # ---------------------------------------------------------------- 8
+    print("\n== 8. 窗口底座 ==")
+    from app.ui import style, window_state
+
+    check("窗口有最小尺寸", window.minimumSize() == QSize(*style.MIN_WINDOW_SIZE),
+          str(window.minimumSize()))
+    check("导航宽度取自 style", window._nav.width() == style.NAV_WIDTH, str(window._nav.width()))
+
+    # 缩到最小尺寸，各块不该被压成 0 宽
+    window.resize(*style.MIN_WINDOW_SIZE)
+    app.processEvents()
+    check("最小尺寸下预览还有宽度", page._preview.width() > 0, str(page._preview.width()))
+    check("最小尺寸下表单还有宽度", page._editors["word"].width() > 0,
+          str(page._editors["word"].width()))
+    check("最小尺寸下保存按钮没被挤没", page._save_button.width() >= 100,
+          str(page._save_button.width()))
+    window.resize(1400, 900)
+    app.processEvents()
+    check("放大后预览跟着变大或至少不变", page._preview.width() >= 1, str(page._preview.width()))
+    check("放大后预览确实比最小尺寸宽", page._preview.width() > 300, str(page._preview.width()))
+    check("录入页左右两栏可拖动", page._body_splitter.orientation() == Qt.Horizontal,
+          str(page._body_splitter.orientation()))
+    check("备注框不会无限长高", page._editors["note"].height() <= style.NOTE_MAX_HEIGHT,
+          str(page._editors["note"].height()))
+    check("保存按钮用主色样式", "#2f6f9f" in page._save_button.styleSheet(),
+          page._save_button.styleSheet()[:40])
+    check("按钮最小高度取自 style",
+          page._recognize_button.minimumHeight() == style.BUTTON_HEIGHT,
+          str(page._recognize_button.minimumHeight()))
+
+    # 关窗口时把尺寸记下来，下次启动恢复
     window.close()
     app.processEvents()
+    saved_state = window_state.load_window_state()
+    check("关窗口写下了窗口尺寸", saved_state.get("width") == 1400,
+          str(saved_state))
+    check("记下的高度也对", saved_state.get("height") == 900, str(saved_state))
+
+    # ---------------------------------------------------------------- 收尾
     shutil.rmtree(WORK_DIR, ignore_errors=True)
 
     print(f"\n===== 通过 {_passed} 项，失败 {_failed} 项 =====")

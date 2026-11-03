@@ -170,6 +170,18 @@ def main() -> int:
           and "端口" in page._banner.text(), page._banner.text())
 
     # offscreen 下 Qt 退出时偶尔会崩在解释器收尾，显式销毁更稳
+    print("\n== 9. 排版 ==")
+    from app.ui import style
+
+    check("地址用等宽字体", "monospace" in page.url_label.styleSheet(),
+          page.url_label.styleSheet()[:40])
+    check("三个按钮都有最小高度",
+          all(button.minimumHeight() == style.BUTTON_HEIGHT
+              for button in (page.start_button, page.stop_button, page.copy_button)),
+          str(page.start_button.minimumHeight()))
+    check("二维码有固定尺寸", page.qr_label.width() == page.qr_label.height(),
+          f"{page.qr_label.width()}x{page.qr_label.height()}")
+
     page.close()
     app.processEvents()
     app.quit()
