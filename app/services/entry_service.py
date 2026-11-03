@@ -216,12 +216,11 @@ def save_entry(
     """
     repository = repo or EntryRepository()
 
-    if image_source is not None:
-        entry = models.Entry(**{**entry.__dict__})
-        entry.source_image = store_image(image_source, root=root)
-
+    # 先校验再复制图片：校验没过就不该在 uploads 里留下一张没人引用的图
     cleaned = normalize(entry)
-    cleaned.source_image = entry.source_image
+
+    if image_source is not None:
+        cleaned.source_image = store_image(image_source, root=root)
 
     try:
         if cleaned.id is None:

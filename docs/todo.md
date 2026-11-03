@@ -10,9 +10,16 @@
   - 落点：`app/ui/crop_view.py`（新组件）+ `app/services/recognizer.py` 的 `normalize_crop()` /
     `prepare_image(image_path, crop=None)`（先裁再压缩，顺序别反）
   - 数据库不用改，存的原图仍然是整张；`source_image` 语义不变
-  - 验收：`scripts/verify_crop.py`（29 项，比对裁出来的像素颜色）、`scripts/verify_crop_ui.py`（49 项）
+  - 验收：`scripts/verify_crop.py`（34 项，比对裁出来的像素颜色）、`scripts/verify_crop_ui.py`（81 项）
   - 已知限制：框选状态不跟随图片旋转（本项目不提供旋转）；框选比例不含 EXIF 旋转前的坐标，
     由服务层在 `exif_transpose` 之后再裁，所以手机竖拍也不会错位
+- [x] **放大框选**（用户 2026-11-03 提出，当天完成）
+  小预览只有 300x220，字密的语法笔记框不准。双击图片（或点「放大框选」）把图铺到接近
+  整屏再拖，点「用这块识别」把框选结果带回小预览。落点：`app/ui/crop_dialog.py`。
+- [x] **一页连录**（用户 2026-11-03 提出，当天完成）
+  保存成功后图片留在预览里、框选和表单清空，接着拖下一个框就能录下一条；同一张图只复制
+  一次进 `uploads`，几条记录共用同一个 `source_image`。顺带把校验挪到复制图片之前，
+  填错了不再留下孤儿图。落点：`app/ui/capture_page.py` + `app/services/entry_service.py`。
 - [ ] 一页多题时批量录入（识别出多条 → 列表里逐条确认）
 - [ ] 字段截断的兜底提示：目前 `error_reason`、`note` 偶尔被模型抄一半就停，
       界面可以在该字段旁标注"图片里似乎还有下半句"，提示手动补

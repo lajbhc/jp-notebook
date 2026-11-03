@@ -19,7 +19,7 @@ from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QImageReader, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
-_HINT_TEXT = "拖动框选要识别的区域 · 右键取消"
+_HINT_TEXT = "拖动框选 · 双击放大 · 右键取消"
 
 
 class CropView(QWidget):
@@ -27,6 +27,7 @@ class CropView(QWidget):
 
     file_dropped = Signal(str)
     selection_changed = Signal(object)  # (x, y, w, h) 归一化比例，或 None
+    double_clicked = Signal()  # 双击图片，供录入页弹出放大框选窗口
 
     MIN_SIDE = 14  # 小于这么多像素的框视为误触
 
@@ -134,6 +135,31 @@ class CropView(QWidget):
         self._selection = None
         self.update()
         self.selection_changed.emit(None)
+
+    def set_selection(self, box: tuple[float, float, float, float] | None) -> None:
+        """从外部设置框选（归一化比例），传 None 等于清空。
+
+        放大框选窗口框完之后要把结果写回小预览，所以两边必须共用同一套坐标：
+        比例相对原图，跟控件多大没关系。框小于 `MIN_SIDE` 时按最小可辨识尺寸落，
+        免得用户在小窗里看到一条线、实际却裁出一块空白。
+        """
+        if box is None:
+            self.clear_selection()
+            return
+        rect = self._image_rect
+        if self._scaled is None or rect.width() <= 0 or rect.height() <= 0:
+            return
+        left = rect.left() + round(box[0] * rect.width())
+        top = rect.top() + round(box[1] * rect.height())
+        width = max(round(box[2] * rect.width()), self.MIN_SIDE)
+        height = max(round(box[3] * rect.height()), self.MIN_SIDE)
+        target = QRect(left, top, width, height).intersected(rect)
+        if target.width() < 1 or target.height() < 1:
+            self.clear_selection()
+            return
+        self._selection = target
+        self.update()
+        self.selection_changed.emit(self.selection())
 
     # ------------------------------------------------------------- 内部几何
     def _rebuild(self) -> None:
@@ -268,10 +294,19 @@ class CropView(QWidget):
         self.selection_changed.emit(self.selection())
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        if event.key() == Qt.Key_Escape:
+        if event.key() == Qt.Key_Escape and self._selection is not None:
             self.clear_selection()
             return
+        # 没有框选时别把 Esc 吃掉：放大框选窗口要靠它关掉
         super().keyPressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        if self._scaled is None:
+            return
+        if event.button() == Qt.LeftButton:
+            self.double_clicked.emit()
+            return
+        super().mouseDoubleClickEvent(event)
 
     # ------------------------------------------------------------- 拖文件
     @staticmethod

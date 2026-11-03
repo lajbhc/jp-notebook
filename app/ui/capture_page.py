@@ -16,6 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -36,6 +37,7 @@ from app.services import entry_service
 from app.services.entry_service import EntryValidationError, SaveFailed
 from app.services.errors import RecognitionError
 from app.ui import entry_fields
+from app.ui.crop_dialog import CropDialog
 from app.ui.crop_view import CropView
 from app.ui.recognition_worker import RecognitionWorker
 
@@ -66,6 +68,9 @@ class CapturePage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._image_path: Path | None = None
+        # 同一张图连续录入时，第一条保存后把 uploads 里的相对路径记下来，
+        # 后面几条直接复用，不再把同一张图复制好几份。
+        self._image_rel: str | None = None
         self._worker: RecognitionWorker | None = None
         self._editors: dict[str, QLineEdit | QPlainTextEdit] = {}
         self._build_ui()
@@ -130,6 +135,10 @@ class CapturePage(QWidget):
         self._preview = CropView(_PLACEHOLDER, size=_PREVIEW_SIZE)
         self._preview.file_dropped.connect(self._load_image)
         self._preview.selection_changed.connect(self._on_selection_changed)
+        self._preview.double_clicked.connect(self._open_crop_dialog)
+        self._preview.setToolTip(
+            "拖动框选识别范围；双击图片打开放大框选；右键取消框选"
+        )
         column.addWidget(self._preview)
 
         self._crop_label = QLabel("")
@@ -137,11 +146,19 @@ class CapturePage(QWidget):
         self._crop_label.setStyleSheet("font-size: 11px; color: #2f6f9f;")
         column.addWidget(self._crop_label)
 
+        crop_row = QHBoxLayout()
+        crop_row.setSpacing(6)
         self._clear_crop_button = QPushButton("还原整张")
         self._clear_crop_button.setEnabled(False)
         self._clear_crop_button.setToolTip("取消框选，识别整张图")
         self._clear_crop_button.clicked.connect(self._preview.clear_selection)
-        column.addWidget(self._clear_crop_button)
+        crop_row.addWidget(self._clear_crop_button)
+
+        self._zoom_button = QPushButton("放大框选")
+        self._zoom_button.setToolTip("把图放大到整屏来框，对得更准（双击图片同效）")
+        self._zoom_button.clicked.connect(self._open_crop_dialog)
+        crop_row.addWidget(self._zoom_button)
+        column.addLayout(crop_row)
 
         self._image_label = QLabel("")
         self._image_label.setWordWrap(True)
@@ -245,6 +262,7 @@ class CapturePage(QWidget):
     def _load_image(self, path: str) -> None:
         if not self._preview.set_image(path):
             self._image_path = None
+            self._image_rel = None
             self._recognize_button.setEnabled(False)
             self._show_banner(
                 "这个文件打不开或不是图片。iPhone 的 HEIC 格式不支持，"
@@ -254,17 +272,43 @@ class CapturePage(QWidget):
             return
 
         self._image_path = self._preview.image_path
+        self._image_rel = None  # 换了图，之前存下的那份相对路径作废
         self._image_label.setText(str(self._image_path))
         self._recognize_button.setEnabled(True)
         self._show_banner(
             f"已选择：{self._image_path.name}。"
-            "可以在图上拖一个框只识别那一块；不框就是整张。",
+            "可以在图上拖一个框只识别那一块；框不准就双击图片放大来框，不框就是整张。",
             "info",
         )
 
     def _on_selection_changed(self, selection) -> None:
         self._crop_label.setText(self._preview.selection_text())
         self._clear_crop_button.setEnabled(selection is not None)
+
+    def _open_crop_dialog(self) -> None:
+        """放大框选：把小预览里框不准的问题解决在源头。"""
+        if self._image_path is None:
+            self._show_banner("请先选择一张图片，再放大框选。", "error")
+            return
+
+        dialog = CropDialog(self._image_path, self._preview.selection(), self)
+        try:
+            accepted = dialog.exec() == QDialog.Accepted
+            selection = dialog.selection() if accepted else None
+        finally:
+            dialog.deleteLater()
+
+        if not accepted:
+            return
+        self._preview.set_selection(selection)
+        if selection is None:
+            self._show_banner("已设为识别整张图。", "info")
+        else:
+            self._show_banner(
+                f"已框选：{self._preview.selection_text()}"
+                "。点「开始识别」就只认这一块。",
+                "ok",
+            )
 
     # ------------------------------------------------------------- 识别
     def _start_recognition(self) -> None:
@@ -329,6 +373,17 @@ class CapturePage(QWidget):
             setattr(entry, name, text)
         return entry
 
+    def _persist(self, entry: models.Entry) -> models.Entry:
+        """存一条记录。同一张图连着录第二条时不重复复制图片。"""
+        if self._image_path is None:
+            return entry_service.save_entry(entry)
+        if self._image_rel is not None:
+            entry.source_image = self._image_rel
+            return entry_service.save_entry(entry)
+        saved = entry_service.save_entry(entry, image_source=self._image_path)
+        self._image_rel = saved.source_image
+        return saved
+
     def _save(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             self._show_banner("识别还没结束，等一下再保存。", "info")
@@ -336,7 +391,7 @@ class CapturePage(QWidget):
 
         entry = self._collect_entry()
         try:
-            saved = entry_service.save_entry(entry, image_source=self._image_path)
+            saved = self._persist(entry)
         except EntryValidationError as exc:
             self._show_banner(exc.user_message, "error")
             return
@@ -351,8 +406,18 @@ class CapturePage(QWidget):
             return
 
         self.entry_saved.emit(saved)
-        self._reset_form(keep_banner=False)
-        self._show_banner(f"已保存：{saved.title}（id={saved.id}）。", "ok")
+        has_image = self._image_path is not None
+        # 保存后保留图片：一页纸上往往有好几条，接着拖下一个框就能录下一条
+        self._reset_form(keep_banner=False, keep_image=True)
+        if has_image:
+            self._show_banner(
+                f"已保存：{saved.title}（id={saved.id}）。"
+                "这张图还留着 —— 再拖一个框（或双击放大框选）就能接着录下一条；"
+                "换图请点「选择图片」，全部清掉点「清空重来」。",
+                "ok",
+            )
+        else:
+            self._show_banner(f"已保存：{saved.title}（id={saved.id}）。", "ok")
 
     # ------------------------------------------------------------- 杂项
     def _set_busy(self, busy: bool) -> None:
@@ -368,14 +433,29 @@ class CapturePage(QWidget):
         )
         self._banner.setVisible(True)
 
-    def _reset_form(self, *, keep_banner: bool = True) -> None:
+    def _reset_form(self, *, keep_banner: bool = True, keep_image: bool = False) -> None:
+        """清空表单。
+
+        `keep_image=True` 只清字段和框选、把图片留在预览里——同一张纸接着录下一条时用；
+        默认连图片一起清掉（「清空重来」就是这条路径）。
+        """
         for editor in self._editors.values():
             if isinstance(editor, QPlainTextEdit):
                 editor.setPlainText("")
             else:
                 editor.clear()
 
+        if keep_image and self._preview.image_path is not None:
+            self._preview.clear_selection()
+            self._crop_label.setText("")
+            self._clear_crop_button.setEnabled(False)
+            self._recognize_button.setEnabled(True)
+            if not keep_banner:
+                self._banner.setVisible(False)
+            return
+
         self._image_path = None
+        self._image_rel = None
         self._preview.clear_image()
         self._crop_label.setText("")
         self._clear_crop_button.setEnabled(False)

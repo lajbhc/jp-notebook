@@ -211,7 +211,9 @@ def main() -> int:
     )
     check("保存后给了成功提示", "已保存" in page._banner.text(), page._banner.text())
     check("保存后表单被清空", page._editors["word"].text() == "", page._editors["word"].text())
-    check("保存后预览被清空", page._image_path is None)
+    # 改成保留图片：一页纸上常有好几条，保存完要能接着框下一块
+    check("保存后图片还留着", page._image_path is not None, str(page._image_path))
+    check("保存后提示里说了可以接着录", "接着录下一条" in page._banner.text(), page._banner.text())
 
     # ---------------------------------------------------------------- 6
     print("\n== 6. 识别成功后自动填表 ==")

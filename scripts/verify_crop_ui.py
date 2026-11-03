@@ -22,13 +22,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PIL import Image
 from PySide6.QtCore import QEvent, QEventLoop, QPointF, QSize, Qt, QTimer
 from PySide6.QtGui import QKeyEvent, QMouseEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from app import config, models
 from app.services import entry_service
 from app.storage.db import init_db
 from app.storage.repository import EntryRepository
+from app.ui import capture_page as capture_page_module
 from app.ui.capture_page import CapturePage
+from app.ui.crop_dialog import CropDialog
 from app.ui.crop_view import CropView
 
 WORK_DIR = config.DATA_DIR / "_verify_crop_ui"
@@ -279,7 +281,7 @@ def main() -> int:
 
     # ---------------------------------------------------------------- 9
     print("\n== 9. 重置表单时框选一起清掉 ==")
-    # 保存成功后表单会自己重置（连图片一起清），所以这里先重新选一张
+    # 「清空重来」是"连图一起清"，而保存成功后只清框、图留着，所以这里单独重新选一张
     page._load_image(str(jpeg))
     app.processEvents()
     drag(page._preview, (40, 0), (150, 110))
@@ -288,6 +290,144 @@ def main() -> int:
     app.processEvents()
     check("重置后框选没了", not page._preview.has_selection())
     check("重置后按钮不可用", not page._clear_crop_button.isEnabled())
+
+    # ---------------------------------------------------------------- 10
+    print("\n== 10. 放大框选窗口：框选比例在两个窗口之间来回传 ==")
+    dialog = CropDialog(str(jpeg), None)
+    check("窗口里有图", dialog._view.image_path is not None)
+    check("没框选时「用这块识别」不可用", not dialog._use_button.isEnabled())
+    check("提示让用户先框一块", "还没框选" in dialog._info.text(), dialog._info.text())
+    check("放大窗口比小预览大得多", dialog._view.width() > page._preview.width(), str(dialog._view.size()))
+
+    dialog._view.set_selection((0.1, 0.2, 0.3, 0.4))
+    box = dialog.selection()
+    check("框完按钮变可用", dialog._use_button.isEnabled())
+    check(
+        "框选比例原样读出来",
+        box is not None and close_to(box[0], 0.1) and close_to(box[1], 0.2)
+        and close_to(box[2], 0.3) and close_to(box[3], 0.4),
+        str(box),
+    )
+    check("提示里报了尺寸", "30%" in dialog._info.text(), dialog._info.text())
+
+    dialog._whole_button.click()
+    check("「识别整张」把框清掉", dialog.selection() is None)
+    check("「识别整张」关掉窗口", dialog.result() == QDialog.Accepted, str(dialog.result()))
+    dialog.deleteLater()
+
+    # ---------------------------------------------------------------- 10.5
+    print("\n== 10.5 双击 / 按钮都能打开放大框选，结果回写小预览 ==")
+    page._load_image(str(jpeg))
+    app.processEvents()
+    opened: dict[str, object] = {}
+
+    class FakeDialog:
+        """顶掉真窗口：只验录入页有没有正确调用、正确回写。"""
+
+        selection_result = (0.2, 0.25, 0.4, 0.3)
+        result_code = QDialog.Accepted
+
+        def __init__(self, image_path, selection, parent=None):
+            opened["path"] = str(image_path)
+            opened["selection"] = selection
+
+        def exec(self):
+            return self.result_code
+
+        def selection(self):
+            return self.selection_result if self.result_code == QDialog.Accepted else None
+
+        def deleteLater(self):
+            pass
+
+    original_dialog = capture_page_module.CropDialog
+    capture_page_module.CropDialog = FakeDialog
+    try:
+        page._zoom_button.click()
+        app.processEvents()
+        check(
+            "把当前图片传给了放大窗口",
+            str(opened.get("path", "")).endswith("shot.png"),
+            str(opened.get("path")),
+        )
+        box = page._preview.selection()
+        check("结果回写到小预览", box is not None and close_to(box[2], 0.4), str(box))
+        check("回写后按钮可用", page._clear_crop_button.isEnabled())
+        check("回写后文案更新", "只识别框选区域" in page._crop_label.text(), page._crop_label.text())
+
+        FakeDialog.result_code = QDialog.Rejected
+        page._zoom_button.click()
+        app.processEvents()
+        box = page._preview.selection()
+        check("取消后原来的框没被改掉", box is not None and close_to(box[2], 0.4), str(box))
+
+        FakeDialog.result_code = QDialog.Accepted
+        opened.clear()
+        page._preview.double_clicked.emit()
+        app.processEvents()
+        check("双击图片也走同一个入口", "path" in opened)
+
+        drag(page._preview, (10, 10), (60, 60))
+        page._preview.mouseDoubleClickEvent(
+            _event(QEvent.MouseButtonDblClick, 30, 30, Qt.LeftButton, Qt.LeftButton)
+        )
+        app.processEvents()
+        check("真的双击事件会发信号", "path" in opened)
+    finally:
+        capture_page_module.CropDialog = original_dialog
+
+    # ---------------------------------------------------------------- 11
+    print("\n== 11. 同一张图接着录下一条 ==")
+    page._word_radio.setChecked(True)  # 前面切成语法了，这里回到生词
+    app.processEvents()
+    page._load_image(str(jpeg))
+    app.processEvents()
+    drag(page._preview, (40, 0), (150, 110))
+    page._editors["word"].setText("走る")
+    page._editors["meaning"].setText("跑")
+    before = repo.count()
+    page._save()
+    app.processEvents()
+
+    check("第一条存进去了", repo.count() == before + 1, str(repo.count()))
+    first = repo.search(limit=1)[0]
+    check("保存后图片还在预览里", page._image_path is not None, str(page._image_path))
+    check("保存后框选被清掉（好拖下一个框）", not page._preview.has_selection())
+    check("保存后识别按钮可用", page._recognize_button.isEnabled())
+    check("保存后表单清空了", page._editors["word"].text() == "", page._editors["word"].text())
+    check("提示里说了可以接着录", "接着录下一条" in page._banner.text(), page._banner.text())
+    check(
+        "记住了 uploads 里的相对路径",
+        page._image_rel == first.source_image,
+        f"{page._image_rel} != {first.source_image}",
+    )
+
+    day_dir = UPLOAD_ROOT / Path(first.source_image).parent
+    files_before = len(list(day_dir.glob("*")))
+
+    drag(page._preview, (40, 0), (150, 110))
+    page._editors["word"].setText("走ります")
+    page._editors["meaning"].setText("跑（敬体）")
+    page._save()
+    app.processEvents()
+
+    check("第二条也存进去了", repo.count() == before + 2, str(repo.count()))
+    second = repo.search(limit=1)[0]
+    check(
+        "两条记的是同一张原图",
+        second.source_image == first.source_image,
+        f"{second.source_image} != {first.source_image}",
+    )
+    check(
+        "没有把同一张图重复复制",
+        len(list(day_dir.glob("*"))) == files_before,
+        f"{len(list(day_dir.glob('*')))} != {files_before}",
+    )
+
+    page._reset_form()
+    app.processEvents()
+    check("「清空重来」把图也清掉了", page._image_path is None and page._preview.image_path is None)
+    check("「清空重来」后忘了的相对路径也没了", page._image_rel is None)
 
     page.close()
     app.processEvents()
