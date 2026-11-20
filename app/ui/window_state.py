@@ -83,3 +83,16 @@ def load_library_columns() -> list[int] | None:
 
 def save_library_columns(widths: list[int]) -> None:
     save_state(library_columns=[int(width) for width in widths])
+
+
+def load_auto_enrich() -> bool:
+    """读出"识别后自动补全"开关，没存过默认开着。"""
+    capture = load_state().get("capture")
+    if not isinstance(capture, dict):
+        return True
+    value = capture.get("auto_enrich", True)
+    return bool(value) if isinstance(value, bool) else True
+
+
+def save_auto_enrich(enabled: bool) -> None:
+    save_state(capture={"auto_enrich": bool(enabled)})

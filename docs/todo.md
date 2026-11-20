@@ -25,8 +25,16 @@
     `_WRITABLE_COLUMNS` 与 `_row_to_entry()` 一并读写这一列，但它不参与关键词搜索。
     验收：`verify_storage.py` 63 项（含"造一个 v1 库再升级"六步）、`tests/test_storage.py`
     新增迁移与往返 2 项
-  - 第 4 步 待做：录入页给 AI 补的字段打浅蓝底 +「AI 补」小标 + 「重新补全」按钮 + 开关记进 `ui.json`
-  - 第 5 步 待做：编辑框也能"补全空缺字段"（老记录用）
+  - 第 4 步 ✅：录入页给 AI 补的字段打浅蓝底（`#eef4fb`）+ 标签后加「· AI 补」+
+    表单上方汇总"有 N 个字段是 AI 补的"；右上「识别后自动补全空缺字段」开关
+    默认开、状态存 `ui.json` 的 `capture.auto_enrich`；「重新补全」按钮填好主字段
+    后可用。落点：`app/ui/entry_fields.py`（`mark_generated`）、`app/ui/capture_page.py`、
+    `app/ui/recognition_worker.py`（`RecognitionWorker` 改调 `recognize_and_enrich`、
+    新增 `EnrichWorker`）、`app/ui/window_state.py`（`load_auto_enrich`/`save_auto_enrich`）。
+    验收：`verify_ui.py` 60→74 项、`verify_crop_ui.py` 81 项
+  - 第 5 步 ✅：编辑框打开时按 `generated_fields` 上色，新增「补全空缺字段」按钮
+    （同样走 `EnrichWorker`），补完合并标记再保存，老记录也能用。
+    验收：`verify_library_ui.py` 74 项
 - [x] **自主框选识别范围**（用户 2026-11-01 提出，2026-11-02 完成）
   在录入页的预览图上按住鼠标拖一个框，只把框里那块送去识别；右键或 Esc 取消，
   「还原整张」回到整图识别，框太小（小于 14 像素）当误触丢掉。

@@ -232,13 +232,15 @@ def main() -> int:
 
     captured: dict[str, object] = {}
 
-    def fake_ok(path, entry_type, crop=None):
+    def fake_ok(path, entry_type, crop=None, **_kwargs):
         captured["crop"] = crop
         captured["type"] = entry_type
-        return models.Entry(type=entry_type, word="走る", reading="はしる", meaning="跑")
+        return entry_service.RecognitionResult(
+            entry=models.Entry(type=entry_type, word="走る", reading="はしる", meaning="跑")
+        )
 
-    original = entry_service.recognize_image
-    entry_service.recognize_image = fake_ok
+    original = entry_service.recognize_and_enrich
+    entry_service.recognize_and_enrich = fake_ok
     try:
         expected = page._preview.selection()
         page._start_recognition()
@@ -277,7 +279,7 @@ def main() -> int:
         app.processEvents()
         check("补上语法点后保存成功", repo.count(entry_type=models.ENTRY_TYPE_GRAMMAR) == 1, str(repo.count()))
     finally:
-        entry_service.recognize_image = original
+        entry_service.recognize_and_enrich = original
 
     # ---------------------------------------------------------------- 9
     print("\n== 9. 重置表单时框选一起清掉 ==")

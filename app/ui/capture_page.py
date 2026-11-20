@@ -16,6 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -37,10 +38,10 @@ from app.logger import get_logger
 from app.services import entry_service
 from app.services.entry_service import EntryValidationError, SaveFailed
 from app.services.errors import RecognitionError
-from app.ui import entry_fields, style
+from app.ui import entry_fields, style, window_state
 from app.ui.crop_dialog import CropDialog
 from app.ui.crop_view import CropView
-from app.ui.recognition_worker import RecognitionWorker
+from app.ui.recognition_worker import EnrichWorker, RecognitionWorker
 
 _IMAGE_FILTER = "图片 (*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tif *.tiff)"
 
@@ -67,7 +68,11 @@ class CapturePage(QWidget):
         # 后面几条直接复用，不再把同一张图复制好几份。
         self._image_rel: str | None = None
         self._worker: RecognitionWorker | None = None
+        self._enrich_worker: EnrichWorker | None = None
         self._editors: dict[str, QLineEdit | QPlainTextEdit] = {}
+        self._field_labels: dict[str, QLabel] = {}
+        # 当前表单里哪些字段是 AI 补的（保存时原样写进 entry.generated_fields）
+        self._generated: tuple[str, ...] = ()
         self._build_ui()
         self._apply_type()
 
@@ -193,6 +198,31 @@ class CapturePage(QWidget):
         column.setSpacing(style.ROW_GAP)
         column.setContentsMargins(0, 0, 0, 0)
 
+        tools = QHBoxLayout()
+        tools.setSpacing(style.TIGHT_GAP)
+        self._auto_enrich_check = QCheckBox("识别后自动补全空缺字段")
+        self._auto_enrich_check.setChecked(window_state.load_auto_enrich())
+        self._auto_enrich_check.setToolTip(
+            "识别完成后，让文字模型补上图片里没有的读音、释义、例句等。\n"
+            "补出来的字段会标成浅蓝底，保存前请核对。"
+        )
+        self._auto_enrich_check.toggled.connect(window_state.save_auto_enrich)
+        tools.addWidget(self._auto_enrich_check)
+        tools.addStretch(1)
+        self._reenrich_button = QPushButton("重新补全")
+        self._reenrich_button.setMinimumHeight(style.BUTTON_HEIGHT)
+        self._reenrich_button.setEnabled(False)
+        self._reenrich_button.setToolTip("按现在填好的内容，再把空着的字段补一遍")
+        self._reenrich_button.clicked.connect(self._start_reenrich)
+        tools.addWidget(self._reenrich_button)
+        column.addLayout(tools)
+
+        self._ai_hint = QLabel("")
+        self._ai_hint.setStyleSheet(style.CAPTION)
+        self._ai_hint.setWordWrap(True)
+        self._ai_hint.setVisible(False)
+        column.addWidget(self._ai_hint)
+
         form_widget = QWidget()
         # 用 QGridLayout 而不是 QFormLayout：读音/词性是短词，挤一行能少滚动一屏；
         # 其余字段横跨整行，长日语句子有地方显示。
@@ -216,9 +246,12 @@ class CapturePage(QWidget):
                 editor = QLineEdit()
                 editor.setClearButtonEnabled(True)
             self._editors[name] = editor
+            # 主字段一有内容就允许「重新补全」
+            editor.textChanged.connect(self._sync_reenrich_button)
 
             name_label = QLabel(label)
             name_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._field_labels[name] = name_label
 
             if name == "part_of_speech" and half_open:
                 # 接着"读音"那一行的右半边放
@@ -286,6 +319,8 @@ class CapturePage(QWidget):
             self._type_note.setText("生词记录：请填词形与读音，语法字段会被清空。")
             self._editors["word"].setPlaceholderText("如：食べる")
 
+        self._sync_reenrich_button()
+
     # ------------------------------------------------------------- 选图
     def load_image(self, path: str | Path) -> None:
         """给外部页面用的入口（手机上传页、以后的剪贴板导入）。"""
@@ -352,22 +387,47 @@ class CapturePage(QWidget):
         if self._image_path is None:
             self._show_banner("请先选择一张图片。", "error")
             return
+        if self._enrich_running():
+            self._show_banner("补全还没结束，等一下再识别。", "info")
+            return
 
         crop = self._preview.selection()
+        auto_enrich = self._auto_enrich_check.isChecked()
         self._set_busy(True)
-        if crop is None:
-            self._show_banner("正在识别整张图…（几秒到几十秒，界面不会卡住）", "info")
+        where = "整张图" if crop is None else "框选的那一块"
+        if auto_enrich:
+            self._show_banner(
+                f"正在识别{where}，识别完还会补全空着的字段…（十几秒，界面不会卡住）",
+                "info",
+            )
         else:
-            self._show_banner("正在识别框选的那一块…（几秒到几十秒，界面不会卡住）", "info")
+            self._show_banner(f"正在识别{where}…（几秒到几十秒，界面不会卡住）", "info")
 
-        self._worker = RecognitionWorker(self._image_path, self.current_type(), crop, self)
+        self._worker = RecognitionWorker(
+            self._image_path,
+            self.current_type(),
+            crop,
+            self,
+            auto_enrich=auto_enrich,
+            source_image=self._image_rel or "",
+        )
         self._worker.succeeded.connect(self._on_recognized)
         self._worker.failed.connect(self._on_recognize_failed)
         self._worker.finished.connect(lambda: self._set_busy(False))
         self._worker.start()
 
-    def _on_recognized(self, entry: models.Entry) -> None:
+    def _on_recognized(self, result) -> None:
+        entry = result.entry
         self._fill_form(entry)
+        self._mark_generated(entry.generated_names)
+
+        if getattr(result, "enrich_error", ""):
+            self._show_banner(
+                f"{result.enrich_error}\n识别结果已经填好了，可以照着原图补完再保存。",
+                "info",
+            )
+            return
+
         missing = [
             label
             for name, label, group in _FIELDS
@@ -375,13 +435,16 @@ class CapturePage(QWidget):
             and (group is None or group == entry.type)
             and name not in ("error_reason", "note")
         ]
+        note = getattr(result, "note", "")
         if missing:
-            self._show_banner(
-                "识别完成，但「" + "、".join(missing) + "」没认出来，请对照原图补上再保存。",
-                "ok",
+            text = (
+                "识别完成，但「" + "、".join(missing) + "」没认出来，请对照原图补上再保存。"
             )
         else:
-            self._show_banner("识别完成，请对照原图核对一遍再保存。", "ok")
+            text = "识别完成，请对照原图核对一遍再保存。"
+        if note:
+            text = f"{text}\n{note}"
+        self._show_banner(text, "ok")
 
     def _on_recognize_failed(self, user_message: str, detail: str) -> None:
         # detail 只进终端/日志，界面上只给人话
@@ -396,6 +459,78 @@ class CapturePage(QWidget):
                 editor.setPlainText(value)
             else:
                 editor.setText(value)
+        self._sync_reenrich_button()
+
+    # ------------------------------------------------------------- AI 标记
+    def _enrich_running(self) -> bool:
+        return self._enrich_worker is not None and self._enrich_worker.isRunning()
+
+    def _mark_generated(self, names) -> None:
+        """给 AI 补过的字段上浅蓝底、在标签后面加「AI 补」，并汇总一句提示。"""
+        self._generated = tuple(name for name in names if name in self._editors)
+        entry_fields.mark_generated(self._editors, self._generated)
+
+        for name, name_label in self._field_labels.items():
+            text = name_label.text().replace(entry_fields.AI_LABEL_SUFFIX, "")
+            if name in self._generated:
+                text += entry_fields.AI_LABEL_SUFFIX
+            name_label.setText(text)
+
+        count = len(self._generated)
+        if count:
+            self._ai_hint.setText(
+                f"有 {count} 个字段是 AI 补的（浅蓝底），图片上未必有，保存前请核对。"
+            )
+        self._ai_hint.setVisible(bool(count))
+        self._sync_reenrich_button()
+
+    def _sync_reenrich_button(self) -> None:
+        """表单里只要有主字段，就允许再补一次。"""
+        primary = "grammar_point" if self.current_type() == models.ENTRY_TYPE_GRAMMAR else "word"
+        editor = self._editors.get(primary)
+        filled = entry_fields.editor_value(editor) != "" if editor is not None else False
+        busy = self._enrich_running() or (
+            self._worker is not None and self._worker.isRunning()
+        )
+        self._reenrich_button.setEnabled(filled and not busy)
+
+    def _start_reenrich(self) -> None:
+        if self._enrich_running():
+            self._show_banner("上一次补全还没结束，等一下。", "info")
+            return
+        if self._worker is not None and self._worker.isRunning():
+            self._show_banner("识别还没结束，等一下再补全。", "info")
+            return
+
+        entry = self._collect_entry()
+        if entry.title == "":
+            self._show_banner("先把词形或语法点填上，再点「重新补全」。", "error")
+            return
+
+        self._set_busy(True)
+        self._show_banner("正在补全空着的字段…（几秒，界面不会卡住）", "info")
+        self._enrich_worker = EnrichWorker(entry, self)
+        self._enrich_worker.finished_with.connect(self._on_enriched)
+        self._enrich_worker.finished.connect(lambda: self._set_busy(False))
+        self._enrich_worker.start()
+
+    def _on_enriched(self, result) -> None:
+        self._fill_form(result.entry)
+        # 补全只往空字段里写，所以之前的标记要留着
+        merged = tuple(dict.fromkeys((*self._generated, *result.entry.generated_names)))
+        self._mark_generated(merged)
+
+        if getattr(result, "enrich_error", ""):
+            self._show_banner(result.enrich_error, "error")
+            return
+        enrichment = getattr(result, "enrichment", None)
+        if enrichment is None or enrichment.is_empty:
+            self._show_banner("没有可补的字段了 —— 该有的都已经有内容。", "info")
+        else:
+            self._show_banner(
+                f"补全完成：{enrichment.summary}\n浅蓝底的字段请核对后再保存。",
+                "ok",
+            )
 
     # ------------------------------------------------------------- 保存
     def _collect_entry(self) -> models.Entry:
@@ -408,6 +543,7 @@ class CapturePage(QWidget):
                 else editor.text()
             )
             setattr(entry, name, text)
+        entry.generated_fields = ",".join(self._generated)
         return entry
 
     def _persist(self, entry: models.Entry) -> models.Entry:
@@ -424,6 +560,9 @@ class CapturePage(QWidget):
     def _save(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             self._show_banner("识别还没结束，等一下再保存。", "info")
+            return
+        if self._enrich_running():
+            self._show_banner("补全还没结束，等一下再保存。", "info")
             return
 
         entry = self._collect_entry()
@@ -461,7 +600,9 @@ class CapturePage(QWidget):
         self._recognize_button.setEnabled(not busy and self._image_path is not None)
         self._recognize_button.setText("识别中…" if busy else "开始识别")
         self._save_button.setEnabled(not busy)
+        self._auto_enrich_check.setEnabled(not busy)
         self._status.setText("正在识别…" if busy else "")
+        self._sync_reenrich_button()
 
     def _show_banner(self, text: str, level: str = "info") -> None:
         self._banner.setText(text)
@@ -479,6 +620,7 @@ class CapturePage(QWidget):
                 editor.setPlainText("")
             else:
                 editor.clear()
+        self._mark_generated(())
 
         if keep_image and self._preview.image_path is not None:
             self._preview.clear_selection()

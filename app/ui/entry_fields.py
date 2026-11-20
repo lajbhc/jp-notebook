@@ -104,6 +104,7 @@ def read(
     entry_type: str,
     entry_id: int | None = None,
     source_image: str = "",
+    generated_fields: str = "",
 ) -> models.Entry:
     """从控件集合读出 Entry。必填校验交给 entry_service.normalize()。"""
     values = {name: editor_value(editor) for name, editor in editors.items()}
@@ -111,8 +112,38 @@ def read(
         id=entry_id,
         type=entry_type,
         source_image=source_image,
+        generated_fields=generated_fields,
         **values,
     )
+
+
+# AI 补出来的字段长什么样：浅蓝底 + 虚线边，一眼能和"照抄图上"的字段分开。
+AI_EDITOR_STYLE = (
+    "background-color: #eef4fb;"
+    "border: 1px solid #a9c7e0;"
+    "border-radius: 4px;"
+    "padding: 2px 4px;"
+)
+AI_LABEL_SUFFIX = " · AI 补"
+
+
+def mark_generated(
+    editors: dict[str, QLineEdit | QPlainTextEdit],
+    names: tuple[str, ...] | list[str],
+) -> None:
+    """给 AI 补过的字段上色（其余字段恢复原样）。"""
+    marked = set(names)
+    for name, editor in editors.items():
+        if name in marked:
+            editor.setStyleSheet(AI_EDITOR_STYLE)
+            editor.setToolTip("这个字段是 AI 补的，图片上可能没有，请核对后再保存。")
+        else:
+            editor.setStyleSheet("")
+            editor.setToolTip("")
+
+
+def clear_generated_marks(editors: dict[str, QLineEdit | QPlainTextEdit]) -> None:
+    mark_generated(editors, ())
 
 
 def apply_enabled(
@@ -139,15 +170,19 @@ def apply_enabled(
 
 
 __all__ = [
+    "AI_EDITOR_STYLE",
+    "AI_LABEL_SUFFIX",
     "FIELD_NAMES",
     "FIELDS",
     "FieldSpec",
     "MULTILINE_FIELDS",
     "apply_enabled",
+    "clear_generated_marks",
     "editor_value",
     "fields_for",
     "fill",
     "make_editor",
+    "mark_generated",
     "read",
     "set_editor_value",
 ]

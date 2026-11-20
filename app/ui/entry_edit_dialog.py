@@ -33,6 +33,7 @@ from app.logger import get_logger
 from app.services import entry_service
 from app.services.entry_service import EntryValidationError, SaveFailed
 from app.ui import entry_fields
+from app.ui.recognition_worker import EnrichWorker
 
 _PREVIEW_SIZE = (168, 126)
 
@@ -45,12 +46,17 @@ class EntryEditDialog(QDialog):
         self._entry = entry
         self.saved_entry: models.Entry | None = None
         self._editors: dict[str, QWidget] = {}
+        self._field_labels: dict[str, QLabel] = {}
+        # 哪些字段是 AI 补的：从记录里带出来，补全后再加上
+        self._generated: tuple[str, ...] = tuple(entry.generated_names)
+        self._enrich_worker: EnrichWorker | None = None
 
         self.setWindowTitle(f"编辑 · {entry.title or '未命名'}")
         self.setMinimumWidth(720)
         self._build_ui()
         entry_fields.fill(self._editors, entry)
         self._apply_type(entry.type)
+        self._mark_generated(self._generated)
 
     # ------------------------------------------------------------- 界面
     def _build_ui(self) -> None:
@@ -66,6 +72,12 @@ class EntryEditDialog(QDialog):
         body.addWidget(self._build_image_panel(), 0)
         root.addLayout(body, 1)
 
+        self._info = QLabel("")
+        self._info.setWordWrap(True)
+        self._info.setStyleSheet("font-size: 12px; color: #2f6f9f;")
+        self._info.hide()
+        root.addWidget(self._info)
+
         self._error = QLabel("")
         self._error.setWordWrap(True)
         self._error.setStyleSheet(
@@ -76,6 +88,10 @@ class EntryEditDialog(QDialog):
         root.addWidget(self._error)
 
         buttons = QDialogButtonBox()
+        self._enrich_button = buttons.addButton("补全空缺字段", QDialogButtonBox.ActionRole)
+        self._enrich_button.setMinimumWidth(110)
+        self._enrich_button.setToolTip("只往空着的字段里填（图片上没抄到的部分）")
+        self._enrich_button.clicked.connect(self._start_enrich)
         self._save_button = buttons.addButton("保存修改", QDialogButtonBox.AcceptRole)
         self._save_button.setMinimumWidth(96)
         cancel = buttons.addButton("取消", QDialogButtonBox.RejectRole)
@@ -120,7 +136,9 @@ class EntryEditDialog(QDialog):
         for spec in entry_fields.FIELDS:
             editor = entry_fields.make_editor(spec)
             self._editors[spec.name] = editor
-            form.addRow(self._field_label(spec), editor)
+            label = self._field_label(spec)
+            self._field_labels[spec.name] = label
+            form.addRow(label, editor)
 
         # 字段多，窗口矮时要能滚
         scroll = QScrollArea()
@@ -198,13 +216,73 @@ class EntryEditDialog(QDialog):
         self._error.setText(text)
         self._error.show()
 
-    def _save(self) -> None:
-        entry = entry_fields.read(
+    # ------------------------------------------------------------- 补全
+    def _mark_generated(self, names) -> None:
+        self._generated = tuple(name for name in names if name in self._editors)
+        entry_fields.mark_generated(self._editors, self._generated)
+        for name, label in self._field_labels.items():
+            text = label.text().replace(entry_fields.AI_LABEL_SUFFIX, "")
+            if name in self._generated:
+                text += entry_fields.AI_LABEL_SUFFIX
+            label.setText(text)
+
+    def _collect_entry(self) -> models.Entry:
+        return entry_fields.read(
             self._editors,
             entry_type=self.current_type(),
             entry_id=self._entry.id,
             source_image=self._entry.source_image,
+            generated_fields=",".join(self._generated),
         )
+
+    def _start_enrich(self) -> None:
+        if self._enrich_worker is not None and self._enrich_worker.isRunning():
+            return
+        entry = self._collect_entry()
+        if entry.title == "":
+            self._show_error("先把词形或语法点填上，再补全空缺字段。")
+            return
+
+        self._error.hide()
+        self._info.setText("正在补全空着的字段…")
+        self._info.show()
+        self._enrich_button.setEnabled(False)
+        self._enrich_button.setText("补全中…")
+        self._save_button.setEnabled(False)
+
+        self._enrich_worker = EnrichWorker(entry, self)
+        self._enrich_worker.finished_with.connect(self._on_enriched)
+        self._enrich_worker.finished.connect(self._on_enrich_finished)
+        self._enrich_worker.start()
+
+    def _on_enrich_finished(self) -> None:
+        self._enrich_button.setEnabled(True)
+        self._enrich_button.setText("补全空缺字段")
+        self._save_button.setEnabled(True)
+
+    def _on_enriched(self, result) -> None:
+        entry_fields.fill(self._editors, result.entry)
+        merged = tuple(dict.fromkeys((*self._generated, *result.entry.generated_names)))
+        self._mark_generated(merged)
+
+        if getattr(result, "enrich_error", ""):
+            self._info.hide()
+            self._show_error(result.enrich_error)
+            return
+        enrichment = getattr(result, "enrichment", None)
+        if enrichment is None or enrichment.is_empty:
+            self._info.setText("没有可补的字段了 —— 该有的都已经有内容。")
+        else:
+            self._info.setText(
+                f"补全完成：{enrichment.summary} 浅蓝底的字段请核对后再保存。"
+            )
+        self._info.show()
+
+    def _save(self) -> None:
+        if self._enrich_worker is not None and self._enrich_worker.isRunning():
+            self._show_error("补全还没结束，等一下再保存。")
+            return
+        entry = self._collect_entry()
         try:
             self.saved_entry = entry_service.save_entry(entry)
         except EntryValidationError as exc:

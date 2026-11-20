@@ -24,12 +24,13 @@ from PySide6.QtCore import QEventLoop, QSize, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QLabel
 
 from app import config, models
-from app.services import entry_service
+from app.services import entry_service, enricher
 from app.services.errors import ApiRequestFailed
 from app.storage.db import init_db
 from app.storage.repository import EntryRepository
 from app.ui.capture_page import CapturePage
 from app.ui.main_window import MainWindow
+from app.ui import window_state
 
 WORK_DIR = config.DATA_DIR / "_verify_ui"
 UPLOAD_ROOT = WORK_DIR / "uploads"
@@ -53,9 +54,14 @@ def labels_of(widget) -> list[str]:
     return [child.text() for child in widget.findChildren(QLabel)]
 
 
-def wait_worker(page: CapturePage, app: QApplication, timeout_ms: int = 8000) -> None:
-    """等识别线程结束，并让主线程把排队过来的信号处理掉。"""
-    worker = page._worker
+def wait_worker(
+    page: CapturePage,
+    app: QApplication,
+    timeout_ms: int = 8000,
+    worker_getter=None,
+) -> None:
+    """等识别（或补全）线程结束，并让主线程把排队过来的信号处理掉。"""
+    worker = worker_getter() if worker_getter is not None else page._worker
     loop = QEventLoop()
     worker.finished.connect(loop.quit)
     QTimer.singleShot(timeout_ms, loop.quit)
@@ -180,15 +186,15 @@ def main() -> int:
     page._load_image(str(jpeg))
     app.processEvents()
 
-    original_recognize = entry_service.recognize_image
+    original_recognize = entry_service.recognize_and_enrich
 
     def boom(*_args, **_kwargs):
         raise ApiRequestFailed(401, "simulated: invalid api key")
 
-    entry_service.recognize_image = boom
+    entry_service.recognize_and_enrich = boom
     page._start_recognition()
     wait_worker(page, app)
-    entry_service.recognize_image = original_recognize
+    entry_service.recognize_and_enrich = original_recognize
 
     check("红色错误提示出现了", "API Key" in page._banner.text(), page._banner.text())
     check("提示里给了退路", "手动" in page._banner.text(), page._banner.text())
@@ -220,21 +226,23 @@ def main() -> int:
     page._load_image(str(jpeg))
     app.processEvents()
 
-    def fake_ok(_path, entry_type, crop=None):
-        return models.Entry(
-            type=entry_type,
-            word="走る",
-            reading="はしる",
-            meaning="跑",
-            part_of_speech="动词・五段",
-            example="毎朝走る。",
-            example_cn="每天早上跑。",
+    def fake_ok(_path, entry_type, crop=None, **_kwargs):
+        return entry_service.RecognitionResult(
+            entry=models.Entry(
+                type=entry_type,
+                word="走る",
+                reading="はしる",
+                meaning="跑",
+                part_of_speech="动词・五段",
+                example="毎朝走る。",
+                example_cn="每天早上跑。",
+            )
         )
 
-    entry_service.recognize_image = fake_ok
+    entry_service.recognize_and_enrich = fake_ok
     page._start_recognition()
     wait_worker(page, app)
-    entry_service.recognize_image = original_recognize
+    entry_service.recognize_and_enrich = original_recognize
 
     check("词形被填进去了", page._editors["word"].text() == "走る", page._editors["word"].text())
     check("读音被填进去了", page._editors["reading"].text() == "はしる")
@@ -247,13 +255,94 @@ def main() -> int:
     check("两条都是生词", repo.count(entry_type=models.ENTRY_TYPE_WORD) == 2)
 
     # ---------------------------------------------------------------- 7
-    print("\n== 7. 表单校验 ==")
+    print("\n== 7. AI 补的字段标记 ==")
+
+    def fake_enriched(_path, entry_type, crop=None, **_kwargs):
+        return entry_service.RecognitionResult(
+            entry=models.Entry(
+                type=entry_type,
+                word="取り組み",
+                reading="とりくみ",
+                meaning="努力；举措",
+                part_of_speech="名词",
+                example="環境問題への取り組みが進んでいる。",
+                example_cn="应对环境问题的举措正在推进。",
+                generated_fields="meaning,example,example_cn",
+            )
+        )
+
+    entry_service.recognize_and_enrich = fake_enriched
+    page._start_recognition()
+    wait_worker(page, app)
+    entry_service.recognize_and_enrich = original_recognize
+
+    check("AI 补的字段被标出来了", "AI 补" in page._field_labels["meaning"].text(),
+          page._field_labels["meaning"].text())
+    check("AI 补的字段有浅蓝底", "#eef4fb" in page._editors["meaning"].styleSheet(),
+          page._editors["meaning"].styleSheet())
+    check("照抄的字段没被标", "AI 补" not in page._field_labels["word"].text(),
+          page._field_labels["word"].text())
+    check("汇总提示出现了", page._ai_hint.isVisible() and "3 个字段" in page._ai_hint.text(),
+          page._ai_hint.text())
+
+    page._save()
+    app.processEvents()
+    marked = repo.search(limit=1)[0]
+    check("AI 标记跟着记录存进库",
+          marked.generated_fields == "meaning,example,example_cn", marked.generated_fields)
+    check("保存后标记被清掉",
+          page._ai_hint.isHidden() and "AI 补" not in page._field_labels["meaning"].text())
+
+    # ---------------------------------------------------------------- 8
+    print("\n== 8. 自动补全开关与「重新补全」==")
+    check("开关默认是开着的", page._auto_enrich_check.isChecked())
+    page._auto_enrich_check.setChecked(False)
+    app.processEvents()
+    check("关掉后写进 ui.json", window_state.load_auto_enrich() is False)
+    page._auto_enrich_check.setChecked(True)
+    app.processEvents()
+    check("再打开也写进 ui.json", window_state.load_auto_enrich() is True)
+
+    check("主字段空时不能补全", not page._reenrich_button.isEnabled())
+    page._editors["word"].setText("取り組み")
+    app.processEvents()
+    check("填了主字段就能补全", page._reenrich_button.isEnabled())
+
+    original_enrich = entry_service.enrich_entry
+
+    def fake_enrich(entry, *_args, **_kwargs):
+        enriched = models.Entry(**entry.__dict__)
+        enriched.meaning = "努力；举措"
+        enriched.generated_fields = "meaning"
+        return entry_service.RecognitionResult(
+            entry=enriched,
+            enrichment=enricher.Enrichment(
+                fields={"meaning": "努力；举措"},
+                rejected={},
+                raw={},
+                elapsed=0.4,
+                model="fake",
+            ),
+        )
+
+    entry_service.enrich_entry = fake_enrich
+    page._start_reenrich()
+    wait_worker(page, app, worker_getter=lambda: page._enrich_worker)
+    entry_service.enrich_entry = original_enrich
+
+    check("补全结果填进了表单", page._editors["meaning"].text() == "努力；举措",
+          page._editors["meaning"].text())
+    check("补全的字段也被标出来", "AI 补" in page._field_labels["meaning"].text())
+    check("补全后给了成功提示", "补全完成" in page._banner.text(), page._banner.text())
+
+    # ---------------------------------------------------------------- 9
+    print("\n== 9. 表单校验 ==")
     page._load_image(str(jpeg))
     app.processEvents()
     page._editors["word"].setText("   ")
     page._save()
     app.processEvents()
-    check("空词形被拦下", repo.count() == 2, str(repo.count()))
+    check("空词形被拦下", repo.count() == 3, str(repo.count()))
     check("提示指出缺词形", "词形" in page._banner.text(), page._banner.text())
 
     page._editors["word"].setText("  静か  ")
@@ -262,9 +351,9 @@ def main() -> int:
     latest = repo.search(limit=1)[0]
     check("保存时去掉了首尾空格", latest.word == "静か", latest.word)
 
-    # ---------------------------------------------------------------- 8
-    print("\n== 8. 窗口底座 ==")
-    from app.ui import style, window_state
+    # ---------------------------------------------------------------- 10
+    print("\n== 10. 窗口底座 ==")
+    from app.ui import style
 
     check("窗口有最小尺寸", window.minimumSize() == QSize(*style.MIN_WINDOW_SIZE),
           str(window.minimumSize()))
