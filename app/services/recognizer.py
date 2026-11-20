@@ -41,6 +41,7 @@ __all__ = [
     "prepare_image",
     "extract_json_object",
     "build_entry",
+    "chat_json",
     "recognize",
 ]
 
@@ -305,6 +306,45 @@ def _post(
         raise ApiRequestFailed(None, f"{type(exc).__name__}: {exc}") from exc
 
 
+def chat_json(
+    request_body: dict[str, Any], *, timeout: tuple[float, float] = DEFAULT_TIMEOUT
+) -> dict[str, Any]:
+    """发一次 /chat/completions 请求，返回解析好的 JSON 对象。
+
+    识别（带图）和补全（纯文本）都走这里，这样两边的错误提示、思考模式的
+    兼容处理（400 时去掉 EXTRA_BODY 重试一次）只有一份实现。
+    """
+    settings = config.get_settings()
+    if not settings.recognition_ready:
+        raise MissingApiKey(settings.missing_required)
+
+    headers = {
+        "Authorization": f"Bearer {settings.api_key}",
+        "Content-Type": "application/json",
+    }
+    url = f"{settings.base_url.rstrip('/')}/chat/completions"
+
+    response = _post(url, headers, request_body, timeout)
+
+    # 有的 OpenAI 兼容端点不认识 enable_thinking，会直接 400。
+    # 这时候把额外参数去掉再试一次，不要让用户因为一个可选项就完全用不了。
+    if response.status_code == 400 and EXTRA_BODY:
+        fallback = {k: v for k, v in request_body.items() if k not in EXTRA_BODY}
+        retry = _post(url, headers, fallback, timeout)
+        if retry.status_code == 200:
+            response = retry
+
+    if response.status_code != 200:
+        raise ApiRequestFailed(response.status_code, _body_snippet(response))
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ResponseNotJson(f"body is not json: {response.text[:200]}") from exc
+
+    return extract_json_object(_content_text(payload))
+
+
 def recognize(
     image_path: str | Path,
     entry_type: str,
@@ -342,32 +382,9 @@ def recognize(
         "max_tokens": MAX_TOKENS,
         **EXTRA_BODY,
     }
-    headers = {
-        "Authorization": f"Bearer {settings.api_key}",
-        "Content-Type": "application/json",
-    }
-    url = f"{settings.base_url.rstrip('/')}/chat/completions"
 
-    response = _post(url, headers, request_body, timeout)
-
-    # 有的 OpenAI 兼容端点不认识 enable_thinking，会直接 400。
-    # 这时候把额外参数去掉再试一次，不要让用户因为一个可选项就完全用不了识别。
-    if response.status_code == 400 and EXTRA_BODY:
-        fallback = {k: v for k, v in request_body.items() if k not in EXTRA_BODY}
-        retry = _post(url, headers, fallback, timeout)
-        if retry.status_code == 200:
-            response = retry
-
-    if response.status_code != 200:
-        raise ApiRequestFailed(response.status_code, _body_snippet(response))
-
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise ResponseNotJson(f"body is not json: {response.text[:200]}") from exc
-
-    entry = build_entry(extract_json_object(_content_text(payload)), entry_type, source_image)
-    return entry
+    payload = chat_json(request_body, timeout=timeout)
+    return build_entry(payload, entry_type, source_image)
 
 
 def _body_snippet(response: requests.Response, limit: int = 300) -> str:

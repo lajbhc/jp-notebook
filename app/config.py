@@ -71,6 +71,9 @@ class Settings:
     vision_model: str | None
     upload_port: int
     reminder_time: str
+    # 补全用的模型（纯文本）。不给就用 VISION_MODEL——同一个端点通常也能跑文本，
+    # 想换成更便宜/更擅长写作的模型时在 .env 里单独写 TEXT_MODEL 即可。
+    text_model: str | None = None
 
     @property
     def missing_required(self) -> list[str]:
@@ -87,6 +90,11 @@ class Settings:
         """识别链路所需的配置是否齐全。"""
         return not self.missing_required
 
+    @property
+    def enrichment_model(self) -> str | None:
+        """补全链路要用的模型：优先 TEXT_MODEL，没配就复用视觉模型。"""
+        return self.text_model or self.vision_model
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
@@ -99,6 +107,7 @@ def get_settings() -> Settings:
         vision_model=_env("VISION_MODEL"),
         upload_port=_env_int("UPLOAD_PORT", DEFAULT_UPLOAD_PORT),
         reminder_time=_env("REMINDER_TIME") or DEFAULT_REMINDER_TIME,
+        text_model=_env("TEXT_MODEL"),
     )
 
 

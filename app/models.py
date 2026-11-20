@@ -25,6 +25,24 @@ PRIMARY_FIELD: dict[str, str] = {
     ENTRY_TYPE_GRAMMAR: "grammar_point",
 }
 
+# 词性的固定枚举。为什么要定死：模型自由发挥时同一类词会写出「動詞（一段）」
+# 「一类动词」「动词-一段」等七八种写法，词库里就没法按词性筛选了。
+# 界面用下拉框，补全服务也只接受这里面的值（见 services/enricher.normalize_pos）。
+PART_OF_SPEECH_OPTIONS: tuple[str, ...] = (
+    "名词",
+    "动词・五段",
+    "动词・一段",
+    "动词・サ変",
+    "动词・カ変",
+    "イ形容词",
+    "ナ形容词",
+    "副词",
+    "助词",
+    "接续词",
+    "惯用句",
+    "其他",
+)
+
 
 @dataclass
 class Entry:
@@ -55,8 +73,17 @@ class Entry:
 
     # ---- 溯源与时间 ----
     source_image: str = ""    # 图片相对路径，如 2026-11-01/ab12cd.jpg
+    # 哪些字段是模型补出来的（逗号分隔的字段名，如 example,example_cn）。
+    # 空串表示每个字都来自图片或用户手填。界面据此给这几个字段打「AI 补」小标，
+    # 让用户知道该重点核对哪里；阶段 3 起会一并存进数据库。
+    generated_fields: str = ""
     created_at: str = ""      # YYYY-MM-DD HH:MM:SS（本地时间）
     updated_at: str = ""
+
+    @property
+    def generated_names(self) -> tuple[str, ...]:
+        """把 generated_fields 拆成字段名元组。"""
+        return tuple(name for name in self.generated_fields.split(",") if name)
 
     @property
     def type_label(self) -> str:
