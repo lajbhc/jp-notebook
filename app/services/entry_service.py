@@ -12,6 +12,7 @@ UI 只跟本模块打交道：不直接调 recognizer、不直接碰 repository�
 from __future__ import annotations
 
 import shutil
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
@@ -19,10 +20,13 @@ from uuid import uuid4
 from PIL import Image, UnidentifiedImageError
 
 from app import config, models
-from app.services import recognizer
-from app.services.errors import ImageInvalid
+from app.logger import get_logger
+from app.services import enricher, recognizer
+from app.services.errors import ImageInvalid, RecognitionError
 from app.storage.db import StorageError
 from app.storage.repository import EntryRepository
+
+log = get_logger("services.entry")
 
 # Pillow 的 format 名 -> 落盘后缀。只接受这些格式，和 recognizer 的白名单保持一致。
 _FORMAT_SUFFIX: dict[str, str] = {
@@ -80,6 +84,32 @@ class SaveFailed(RuntimeError):
         self.user_message = user_message
         self.detail = detail
         super().__init__(detail or user_message)
+
+
+@dataclass(frozen=True)
+class RecognitionResult:
+    """识别（外加补全）的结果。
+
+    为什么不是直接返回 Entry：补全是"加分项"，它失败时识别结果照样有用，
+    所以要把"补全没成功"当成结果的一部分返回，而不是抛异常让界面丢掉整条记录。
+    """
+
+    entry: models.Entry
+    enrichment: enricher.Enrichment | None = None
+    enrich_error: str = ""
+
+    @property
+    def enriched(self) -> bool:
+        return bool(self.enrichment and self.enrichment.fields)
+
+    @property
+    def note(self) -> str:
+        """给界面显示的一句话（可以空着）。"""
+        if self.enrich_error:
+            return f"补全没成功：{self.enrich_error}（可以手动填写）"
+        if self.enrichment is not None:
+            return self.enrichment.summary
+        return ""
 
 
 # --------------------------------------------------------------- 图片
@@ -168,12 +198,69 @@ def recognize_image(
     return recognizer.recognize(image_path, entry_type, crop=crop)
 
 
+def recognize_and_enrich(
+    image_path: str | Path,
+    entry_type: str,
+    *,
+    crop: tuple[float, float, float, float] | None = None,
+    source_image: str = "",
+    auto_enrich: bool = True,
+) -> RecognitionResult:
+    """识别一张图，然后把空字段补上。
+
+    补全失败**不会**让整次识别失败：返回的 `RecognitionResult` 里 `enrich_error`
+    带一句人话，`entry` 还是可以校正保存的。原图里的内容永远优先，补全只填空。
+    """
+    entry = recognizer.recognize(
+        image_path, entry_type, crop=crop, source_image=source_image
+    )
+    if not auto_enrich:
+        return RecognitionResult(entry=entry)
+    return enrich_entry(entry)
+
+
+def enrich_entry(
+    entry: models.Entry,
+    *,
+    targets: tuple[str, ...] | None = None,
+) -> RecognitionResult:
+    """给一条已有记录补空字段（录入页的「重新补全」和编辑旧记录也走这里）。"""
+    if not enricher.missing_fields(entry):
+        return RecognitionResult(entry=entry)
+
+    try:
+        result = enricher.enrich(entry, targets=targets)
+    except RecognitionError as exc:
+        log.warning("补全失败：%s", exc.detail or exc.user_message)
+        return RecognitionResult(entry=entry, enrich_error=exc.user_message)
+    except Exception as exc:  # noqa: BLE001 - 补全是加分项，不许它弄丢识别结果
+        log.exception("补全时出现未预期的错误：%s", exc)
+        return RecognitionResult(entry=entry, enrich_error="补全时出了点问题，可以手动填写。")
+
+    return RecognitionResult(entry=enricher.apply(entry, result), enrichment=result)
+
+
 # --------------------------------------------------------------- 保存
 def new_entry(entry_type: str = models.ENTRY_TYPE_WORD) -> models.Entry:
     """建一条空记录，供表单绑定。"""
     if entry_type not in models.ENTRY_TYPES:
         raise ValueError(f"unknown entry_type: {entry_type!r}")
     return models.Entry(type=entry_type)
+
+
+def _clean_generated_fields(text: str, entry: models.Entry) -> str:
+    """整理"哪些字段是补的"：只留当前类型能补的、且现在还有内容的字段。
+
+    为什么要过滤：用户可能把 AI 补的例句删掉了，那就不该继续标"这是 AI 补的"；
+    也可能把一条生词切成语法，那时 grammar 专属的标记才有意义。
+    """
+    allowed = enricher.FILLABLE_FIELDS.get(entry.type, ())
+    names: list[str] = []
+    for raw in (text or "").split(","):
+        name = raw.strip()
+        if name in allowed and name not in names and getattr(entry, name, "").strip():
+            names.append(name)
+    return ",".join(names)
 
 
 def normalize(entry: models.Entry) -> models.Entry:
@@ -183,6 +270,7 @@ def normalize(entry: models.Entry) -> models.Entry:
     - 所有文本字段去首尾空白
     - 清掉另一类记录才用得到的字段
     - 主字段（生词的 word / 语法的 grammar_point）不能为空
+    - "哪些字段是 AI 补的"跟着一起清理（见 `_clean_generated_fields`）
     """
     if entry.type not in models.ENTRY_TYPES:
         raise EntryValidationError("记录类型只能是「生词」或「语法」。")
@@ -193,6 +281,8 @@ def normalize(entry: models.Entry) -> models.Entry:
 
     for field in _EXCLUSIVE_GROUPS[entry.type]:
         setattr(cleaned, field, "")
+
+    cleaned.generated_fields = _clean_generated_fields(entry.generated_fields, cleaned)
 
     required = _REQUIRED_TEXT[entry.type]
     if not getattr(cleaned, required):

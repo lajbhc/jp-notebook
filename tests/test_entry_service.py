@@ -14,9 +14,9 @@ import pytest
 from PIL import Image
 
 from app import config, models
-from app.services import entry_service
+from app.services import enricher, entry_service
 from app.services.entry_service import EntryValidationError
-from app.services.errors import ImageInvalid
+from app.services.errors import ApiRequestFailed, ImageInvalid
 from tests.conftest import make_entry
 
 
@@ -122,3 +122,91 @@ def test_store_image_rejects_non_image(upload_dir, sandbox: Path) -> None:
 def test_absolute_image_path_returns_none_for_missing(upload_dir) -> None:
     assert entry_service.absolute_image_path("") is None
     assert entry_service.absolute_image_path("2026-01-01/ghost.jpg") is None
+
+
+# ---------------------------------------------------------------- 补全接线
+def test_normalize_keeps_markers_only_for_filled_fields() -> None:
+    entry = make_entry(
+        models.ENTRY_TYPE_WORD,
+        word="食べる",
+        reading="たべる",
+        meaning="吃",
+        generated_fields="reading,meaning,example",
+    )
+    cleaned = entry_service.normalize(entry)
+    # example 现在是空的（用户删了），就不该继续标成"AI 补的"
+    assert cleaned.generated_fields == "reading,meaning"
+
+
+def test_normalize_drops_markers_of_other_type() -> None:
+    entry = make_entry(
+        models.ENTRY_TYPE_GRAMMAR,
+        grammar_point="〜ことになる",
+        meaning="客观上决定",
+        generated_fields="reading,meaning",
+    )
+    cleaned = entry_service.normalize(entry)
+    assert cleaned.generated_fields == "meaning"
+
+
+def test_recognize_and_enrich_merges_filled_fields(monkeypatch, sandbox: Path) -> None:
+    monkeypatch.setattr(
+        entry_service.recognizer,
+        "recognize",
+        lambda *args, **kwargs: make_entry(models.ENTRY_TYPE_WORD, word="食べる"),
+    )
+    monkeypatch.setattr(
+        entry_service.enricher,
+        "enrich",
+        lambda entry, **kwargs: enricher.Enrichment(
+            fields={"reading": "たべる", "meaning": "吃"}, rejected={}, raw={}
+        ),
+    )
+
+    result = entry_service.recognize_and_enrich(sandbox / "x.jpg", models.ENTRY_TYPE_WORD)
+
+    assert result.entry.reading == "たべる"
+    assert result.entry.generated_names == ("meaning", "reading")
+    assert result.enriched is True
+    assert "补了 2 个字段" in result.note
+
+
+def test_recognize_and_enrich_skips_when_disabled(monkeypatch, sandbox: Path) -> None:
+    monkeypatch.setattr(
+        entry_service.recognizer,
+        "recognize",
+        lambda *args, **kwargs: make_entry(models.ENTRY_TYPE_WORD, word="食べる"),
+    )
+
+    def should_not_be_called(*args, **kwargs):
+        raise AssertionError("auto_enrich=False 时不该调用补全")
+
+    monkeypatch.setattr(entry_service.enricher, "enrich", should_not_be_called)
+
+    result = entry_service.recognize_and_enrich(
+        sandbox / "x.jpg", models.ENTRY_TYPE_WORD, auto_enrich=False
+    )
+
+    assert result.entry.word == "食べる"
+    assert result.enriched is False
+    assert result.note == ""
+
+
+def test_enrichment_failure_keeps_recognized_entry(monkeypatch, sandbox: Path) -> None:
+    monkeypatch.setattr(
+        entry_service.recognizer,
+        "recognize",
+        lambda *args, **kwargs: make_entry(models.ENTRY_TYPE_WORD, word="食べる"),
+    )
+
+    def boom(entry, **kwargs):
+        raise ApiRequestFailed(401, "bad key")
+
+    monkeypatch.setattr(entry_service.enricher, "enrich", boom)
+
+    result = entry_service.recognize_and_enrich(sandbox / "x.jpg", models.ENTRY_TYPE_WORD)
+
+    assert result.entry.word == "食べる"
+    assert result.enriched is False
+    assert "API Key" in result.enrich_error
+    assert "手动填写" in result.note

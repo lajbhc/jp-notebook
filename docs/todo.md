@@ -15,7 +15,10 @@
   - 第 1 步 ✅ `app/prompts/enrich.py` + `app/services/enricher.py`（`enrich/apply/parse_payload`）
     + `scripts/verify_enrich.py`（67 项）+ `scripts/try_enrich.py`（手动试真实效果）
     + `tests/test_enricher.py`（11 项）；实测只给「取り組み」1.4s 补全 5 个字段
-  - 第 2 步 待做：识别提示词拆 `from_image` / `suggested` 并在 `recognizer` 里按"非空优先"合并
+  - 第 2 步 ✅ 服务层接线：`entry_service.recognize_and_enrich()`（识别完自动补）与
+    `enrich_entry()`（给已有记录补）；补全失败只把一句话放进 `RecognitionResult.enrich_error`，
+    识别结果照常返回；`normalize()` 会清掉"用户已经删空的字段"的 AI 标记，切成语法时也会丢掉
+    生词专属标记。验收：`verify_enrich.py` 81 项、`tests/test_entry_service.py` 新增 5 项
   - 第 3 步 待做：schema 1→2 迁移（`ALTER TABLE entries ADD COLUMN generated_fields`）+ repository 读写
   - 第 4 步 待做：录入页给 AI 补的字段打浅蓝底 +「AI 补」小标 + 「重新补全」按钮 + 开关记进 `ui.json`
   - 第 5 步 待做：编辑框也能"补全空缺字段"（老记录用）

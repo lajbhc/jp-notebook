@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import config, models
-from app.services import enricher
+from app.services import enricher, entry_service
 from app.services.errors import (
     ApiRequestFailed,
     MissingApiKey,
@@ -375,6 +375,81 @@ def main() -> int:
     finally:
         server.shutdown()
         server.server_close()
+
+    print("== 7. 识别之后自动补全（服务层）==")
+    real_recognize = entry_service.recognizer.recognize
+    real_enrich = entry_service.enricher.enrich
+    calls = {"enrich": 0}
+
+    def fake_recognize(path, entry_type, **kwargs):
+        return word_entry()
+
+    def fake_enrich(entry, *, targets=None, timeout=None):
+        calls["enrich"] += 1
+        return enricher.parse_payload(dict(WORD_FILLED), entry, tuple(WORD_FILLED))
+
+    try:
+        entry_service.recognizer.recognize = fake_recognize
+        entry_service.enricher.enrich = fake_enrich
+
+        result = entry_service.recognize_and_enrich("x.jpg", models.ENTRY_TYPE_WORD)
+        check("识别后自动补全并合进 entry", result.entry.reading == "たべる" and result.enriched)
+        check("记下了补的字段", set(result.entry.generated_names) == set(WORD_FILLED))
+        check("note 说明了补了哪些", "补了" in result.note, result.note)
+
+        calls["enrich"] = 0
+        off = entry_service.recognize_and_enrich(
+            "x.jpg", models.ENTRY_TYPE_WORD, auto_enrich=False
+        )
+        check("关掉补全就不调用", calls["enrich"] == 0 and not off.enriched)
+        check("关掉补全时 note 为空", off.note == "")
+
+        calls["enrich"] = 0
+        entry_service.recognizer.recognize = lambda *a, **k: word_entry(**WORD_FILLED)
+        complete = entry_service.recognize_and_enrich("x.jpg", models.ENTRY_TYPE_WORD)
+        check("字段齐全时不调用补全", calls["enrich"] == 0 and not complete.enriched)
+
+        entry_service.recognizer.recognize = fake_recognize
+
+        def boom(entry, *, targets=None, timeout=None):
+            calls["enrich"] += 1
+            raise ApiRequestFailed(401, "bad key")
+
+        entry_service.enricher.enrich = boom
+        failed = entry_service.recognize_and_enrich("x.jpg", models.ENTRY_TYPE_WORD)
+        check("补全失败不影响识别结果", failed.entry.word == "食べる" and not failed.enriched)
+        check("补全失败给出一句人话", "API Key" in failed.enrich_error, failed.enrich_error)
+        check("补全失败时 note 提示可以手填", "手动填写" in failed.note, failed.note)
+
+        def crash(entry, *, targets=None, timeout=None):
+            raise RuntimeError("boom")
+
+        entry_service.enricher.enrich = crash
+        crashed = entry_service.recognize_and_enrich("x.jpg", models.ENTRY_TYPE_WORD)
+        check("补全抛未预期异常也不崩", crashed.entry.word == "食べる" and bool(crashed.enrich_error))
+
+        entry_service.enricher.enrich = fake_enrich
+        again = entry_service.enrich_entry(word_entry())
+        check("enrich_entry 能单独补一条已有记录", again.entry.meaning == "吃")
+
+        kept = entry_service.normalize(result.entry)
+        check("保存前整理时保留 AI 标记", set(kept.generated_names) == set(WORD_FILLED), kept.generated_fields)
+        trimmed = models.Entry(
+            type=models.ENTRY_TYPE_WORD,
+            word="食べる",
+            reading="たべる",
+            generated_fields="reading,example",
+        )
+        check("被用户删掉的字段不再标记", entry_service.normalize(trimmed).generated_fields == "reading")
+        as_grammar = models.Entry(
+            type=models.ENTRY_TYPE_GRAMMAR,
+            grammar_point="〜ことになる",
+            generated_fields="reading,meaning",
+        )
+        check("切成语法后不保留生词专属标记", entry_service.normalize(as_grammar).generated_fields == "")
+    finally:
+        entry_service.recognizer.recognize = real_recognize
+        entry_service.enricher.enrich = real_enrich
 
     print()
     print(f"通过 {_passed} 项，失败 {_failed} 项")
