@@ -37,6 +37,8 @@ _WRITABLE_COLUMNS: tuple[str, ...] = (
     "type",
     *_SEARCHABLE_COLUMNS,
     "source_image",
+    # "哪些字段是 AI 补的"。不参与关键词搜索：搜"例句"不该把打了标记的记录全捞出来。
+    "generated_fields",
 )
 
 # 主字段的中文名，用于报错信息
@@ -83,6 +85,7 @@ def _row_to_entry(row) -> models.Entry:
         error_reason=row["error_reason"],
         note=row["note"],
         source_image=row["source_image"],
+        generated_fields=row["generated_fields"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

@@ -14,15 +14,15 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from app import config
 
-# 表结构版本。将来加字段/加表时 +1，并在 init_db 里补迁移分支。
-# 现在只有 v1，所以版本不匹配时直接报错，而不是猜着改用户的库。
-SCHEMA_VERSION = 1
+# 表结构版本。将来加字段/加表时 +1，并在下面补一条迁移分支（见 _MIGRATIONS）。
+# v1 → v2：entries 加 generated_fields（记录哪些字段是 AI 补的）
+SCHEMA_VERSION = 2
 
 META_SCHEMA_VERSION_KEY = "schema_version"
 
@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS entries (
     error_reason    TEXT    NOT NULL DEFAULT '',
     note            TEXT    NOT NULL DEFAULT '',
     source_image    TEXT    NOT NULL DEFAULT '',
+    generated_fields TEXT   NOT NULL DEFAULT '',
     created_at      TEXT    NOT NULL,
     updated_at      TEXT    NOT NULL
 );
@@ -111,7 +112,11 @@ def connect(db_path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
 
 
 def init_db(db_path: str | Path | None = None) -> None:
-    """建表并写入 schema_version（幂等）。"""
+    """建表、升级表结构、写入 schema_version（幂等）。
+
+    升级策略：能就地迁移的就迁移（`ALTER TABLE ADD COLUMN` 不重建表、不丢数据），
+    迁移不了的（版本比程序还新）一律报错退出，绝不猜着改用户的库。
+    """
     with connect(db_path) as conn:
         conn.executescript(_SCHEMA_SQL)
 
@@ -121,8 +126,8 @@ def init_db(db_path: str | Path | None = None) -> None:
 
         current = _read_schema_version(conn)
         if current is None:
-            _write_meta(conn, META_SCHEMA_VERSION_KEY, str(SCHEMA_VERSION))
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            # 全新的库：建表语句已经是最新结构，直接记版本
+            _write_schema_version(conn, SCHEMA_VERSION)
             return
 
         if current > SCHEMA_VERSION:
@@ -131,10 +136,46 @@ def init_db(db_path: str | Path | None = None) -> None:
                 f"请升级程序，或备份后删除 {resolve_db_path(db_path)} 重新开始。"
             )
         if current < SCHEMA_VERSION:
+            _migrate(conn, current)
+
+
+def _migrate(conn: sqlite3.Connection, current: int) -> None:
+    """从 current 逐级升到 SCHEMA_VERSION，每一级成功后立刻写回版本号。"""
+    while current < SCHEMA_VERSION:
+        step = _MIGRATIONS.get(current)
+        if step is None:
             raise SchemaVersionError(
-                f"数据库表结构版本为 {current}，本程序需要 {SCHEMA_VERSION}。"
-                f"缺少迁移脚本，请先备份数据库。"
+                f"数据库表结构版本为 {current}，没有升到 {SCHEMA_VERSION} 的迁移脚本。"
+                "请先备份 data/app.db。"
             )
+        target, migrate = step
+        migrate(conn)
+        current = target
+        _write_schema_version(conn, current)
+
+
+def _migrate_1_to_2(conn: sqlite3.Connection) -> None:
+    """v1 → v2：entries 加 generated_fields，记下哪些字段是 AI 补的。
+
+    只加列、不改旧数据，所以老库升级后每条记录的 generated_fields 都是空串 ——
+    这正是我们要的语义："这条记录里没有 AI 补的内容"。
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(entries)")}
+    if "generated_fields" not in columns:
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN generated_fields TEXT NOT NULL DEFAULT ''"
+        )
+
+
+# 起点版本 -> (目标版本, 迁移函数)。加新版本时在这里追加一条。
+_MIGRATIONS: dict[int, tuple[int, Callable[[sqlite3.Connection], None]]] = {
+    1: (2, _migrate_1_to_2),
+}
+
+
+def _write_schema_version(conn: sqlite3.Connection, version: int) -> None:
+    _write_meta(conn, META_SCHEMA_VERSION_KEY, str(version))
+    conn.execute(f"PRAGMA user_version = {version}")
 
 
 def get_schema_version(db_path: str | Path | None = None) -> int | None:

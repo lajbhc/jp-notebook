@@ -49,6 +49,47 @@ def test_refuses_unknown_schema_version(db_path):
         init_db(db_path)
 
 
+def test_migrates_v1_database_in_place(db_path):
+    """v1 库（没有 generated_fields）升级后：列补上了、老数据没丢、版本变了。"""
+    repo = EntryRepository(db_path)
+    legacy = repo.create(make_entry())
+
+    # 手工退化成 v1
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE entries DROP COLUMN generated_fields")
+        conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+        conn.execute("PRAGMA user_version = 1")
+
+    assert get_schema_version(db_path) == 1
+
+    init_db(db_path)
+
+    assert get_schema_version(db_path) == SCHEMA_VERSION
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(entries)")}
+    assert "generated_fields" in columns
+
+    migrated = EntryRepository(db_path).get(legacy.id)
+    assert migrated is not None
+    assert migrated.word == "食べる"
+    assert migrated.generated_fields == ""  # 老记录没有 AI 补的内容
+
+
+def test_generated_fields_roundtrip(repo):
+    created = repo.create(make_entry(generated_fields="meaning,example"))
+
+    fetched = repo.get(created.id)
+    assert fetched.generated_fields == "meaning,example"
+    assert fetched.generated_names == ("meaning", "example")
+
+    fetched.generated_fields = ""
+    repo.update(fetched)
+    assert repo.get(created.id).generated_fields == ""
+
+    # 标记只是标记，不该被关键词搜到
+    assert repo.search("example") == []
+
+
 # ------------------------------------------------------------------ 增删改查
 def test_create_fills_id_and_timestamps(repo):
     created = repo.create(make_entry())

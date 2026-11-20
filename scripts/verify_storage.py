@@ -46,6 +46,12 @@ def expect_error(name: str, exc_type: type[BaseException], func) -> None:
         check(name, False, "没有抛出异常")
 
 
+def _columns(db_path: Path) -> set[str]:
+    """读出 entries 表现有的列名，用来判断迁移有没有真的加列。"""
+    with db.connect(db_path) as conn:
+        return {row["name"] for row in conn.execute("PRAGMA table_info(entries)")}
+
+
 def main() -> int:
     print(f"临时库路径: {VERIFY_DB}")
 
@@ -57,7 +63,7 @@ def main() -> int:
 
     db.init_db(VERIFY_DB)
     check("建库后文件存在", VERIFY_DB.exists())
-    check("schema_version 写入正确", db.get_schema_version(VERIFY_DB) == 1)
+    check("schema_version 写入正确", db.get_schema_version(VERIFY_DB) == db.SCHEMA_VERSION)
 
     with db.connect(VERIFY_DB) as conn:
         tables = {
@@ -86,7 +92,7 @@ def main() -> int:
     )
     db.init_db(VERIFY_DB)
     check("二次初始化后数据还在", repo.count() == 1)
-    check("二次初始化后版本不变", db.get_schema_version(VERIFY_DB) == 1)
+    check("二次初始化后版本不变", db.get_schema_version(VERIFY_DB) == db.SCHEMA_VERSION)
 
     # ---------------------------------------------------------------- 3
     print("\n== 3. 新建记录 ==")
@@ -194,10 +200,59 @@ def main() -> int:
     db.init_db(VERIFY_DB)
     repo2 = EntryRepository(VERIFY_DB)
     check("重建后能正常查询", repo2.count() == 0)
-    check("重建后版本正确", db.get_schema_version(VERIFY_DB) == 1)
+    check("重建后版本正确", db.get_schema_version(VERIFY_DB) == db.SCHEMA_VERSION)
 
     # ---------------------------------------------------------------- 10
-    print("\n== 10. 正式库初始化 ==")
+    print("\n== 10. AI 标记字段（generated_fields）==")
+    marked = repo2.create(
+        models.Entry(
+            type=models.ENTRY_TYPE_WORD,
+            word="取り組み",
+            meaning="举措",
+            generated_fields="meaning,example",
+        )
+    )
+    fetched = repo2.get(marked.id)
+    check("generated_fields 能存进去", fetched.generated_fields == "meaning,example")
+    check("generated_names 能拆出两个字段", fetched.generated_names == ("meaning", "example"))
+    marked.generated_fields = ""
+    repo2.update(marked)
+    check("generated_fields 能被清空", repo2.get(marked.id).generated_fields == "")
+    check("关键词不会搜到标记内容", repo2.search("example") == [])
+
+    # ---------------------------------------------------------------- 11
+    print("\n== 11. v1 -> v2 迁移 ==")
+    v1_db = VERIFY_DB.parent / "verify_v1.db"
+    leftover_files = (v1_db, Path(f"{v1_db}-wal"), Path(f"{v1_db}-shm"))
+    for path in leftover_files:
+        path.unlink(missing_ok=True)
+
+    db.init_db(v1_db)  # 先造一个当前版本的库
+    v1_repo = EntryRepository(v1_db)
+    legacy = v1_repo.create(
+        models.Entry(type=models.ENTRY_TYPE_WORD, word="移行テスト", meaning="迁移测试")
+    )
+    # 手工退化成 v1：删掉新列 + 把版本号写回 1
+    with db.connect(v1_db) as conn:
+        conn.execute("ALTER TABLE entries DROP COLUMN generated_fields")
+        conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+        conn.execute("PRAGMA user_version = 1")
+
+    check("已退化成 v1（没有 generated_fields 列）", "generated_fields" not in _columns(v1_db))
+    check("退化后版本读出来是 1", db.get_schema_version(v1_db) == 1)
+
+    db.init_db(v1_db)  # 触发迁移
+    check("迁移后版本升到最新", db.get_schema_version(v1_db) == db.SCHEMA_VERSION)
+    check("迁移后补上了 generated_fields 列", "generated_fields" in _columns(v1_db))
+    migrated = EntryRepository(v1_db).get(legacy.id)
+    check("迁移没有丢旧数据", migrated is not None and migrated.word == "移行テスト")
+    check("迁移后旧记录的 AI 标记为空", migrated.generated_fields == "")
+
+    for path in leftover_files:
+        path.unlink(missing_ok=True)
+
+    # ---------------------------------------------------------------- 12
+    print("\n== 12. 正式库初始化 ==")
     db.init_db()  # 不传路径 -> config.DB_PATH
     check(f"正式库已生成 {config.DB_PATH}", config.DB_PATH.exists())
     print(f"  正式库记录数: {EntryRepository().count()}")

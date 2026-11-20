@@ -346,7 +346,7 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 |---|---|---|
 | 1 | 补全服务：`prompts/enrich.py` + `services/enricher.py` + `scripts/verify_enrich.py` | ✅ 完成 |
 | 2 | 服务层接线：`entry_service.recognize_and_enrich()` / `enrich_entry()`，补全失败不拖垮识别 | ✅ 完成 |
-| 3 | schema 1→2 迁移，`generated_fields` 入库 | 待做 |
+| 3 | schema 1→2 迁移，`generated_fields` 入库（老库就地加列，不重建表） | ✅ 完成 |
 | 4 | 录入页给 AI 补的字段打标 + 「重新补全」按钮 | 待做 |
 | 5 | 编辑框也能补全老记录 | 待做 |
 

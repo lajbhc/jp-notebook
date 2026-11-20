@@ -19,7 +19,12 @@
     `enrich_entry()`（给已有记录补）；补全失败只把一句话放进 `RecognitionResult.enrich_error`，
     识别结果照常返回；`normalize()` 会清掉"用户已经删空的字段"的 AI 标记，切成语法时也会丢掉
     生词专属标记。验收：`verify_enrich.py` 81 项、`tests/test_entry_service.py` 新增 5 项
-  - 第 3 步 待做：schema 1→2 迁移（`ALTER TABLE entries ADD COLUMN generated_fields`）+ repository 读写
+  - 第 3 步 ✅ `app/storage/db.py` 的 `SCHEMA_VERSION` 1→2 与 `_MIGRATIONS` 迁移表：
+    `_migrate_1_to_2()` 用 `ALTER TABLE entries ADD COLUMN generated_fields` 就地加列
+    （不重建表、不动旧数据，老记录升级后就是"没有 AI 补的内容"）；repository 的
+    `_WRITABLE_COLUMNS` 与 `_row_to_entry()` 一并读写这一列，但它不参与关键词搜索。
+    验收：`verify_storage.py` 63 项（含"造一个 v1 库再升级"六步）、`tests/test_storage.py`
+    新增迁移与往返 2 项
   - 第 4 步 待做：录入页给 AI 补的字段打浅蓝底 +「AI 补」小标 + 「重新补全」按钮 + 开关记进 `ui.json`
   - 第 5 步 待做：编辑框也能"补全空缺字段"（老记录用）
 - [x] **自主框选识别范围**（用户 2026-11-01 提出，2026-11-02 完成）
