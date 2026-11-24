@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from app import models
 from app.logger import get_logger
-from app.services import library_service
+from app.services import library_service, maintenance_service
 from app.services.library_service import FilterInvalid, LibraryFailed
 from app.ui.entry_edit_dialog import EntryEditDialog
 from app.ui.entry_table_model import COLUMN_WIDTHS, EntryTableModel
@@ -125,6 +125,14 @@ class LibraryPage(QWidget):
         self.stats_label.setStyleSheet(style.HINT_DIM)
         row.addWidget(self.stats_label)
         row.addStretch(1)
+
+        self.cleanup_button = QPushButton("整理图片")
+        self.cleanup_button.setMinimumWidth(88)
+        self.cleanup_button.setToolTip(
+            "看看有没有删记录时留下的孤儿图片。只会删没有任何记录引用的图。"
+        )
+        self.cleanup_button.clicked.connect(self._cleanup_images)
+        row.addWidget(self.cleanup_button)
 
         self.edit_button = QPushButton("编辑")
         self.edit_button.setMinimumWidth(72)
@@ -413,6 +421,46 @@ class LibraryPage(QWidget):
         else:
             self.message.emit("这条记录已经不存在了，列表已刷新")
         self.reload()
+
+    def _cleanup_images(self) -> None:
+        """看一眼上传目录，只删"没有任何记录引用"的图。
+
+        删记录时故意保留原图，所以这些图迟早会攒起来。这里先算清楚账再问一遍，
+        绝不静默删除。
+        """
+        self._clear_error()
+        try:
+            report = maintenance_service.scan()
+        except maintenance_service.MaintenanceFailed as exc:
+            get_logger("ui.library").warning("整理图片失败：%s", exc.detail)
+            self._show_error(exc.user_message)
+            return
+
+        if not report.orphans:
+            self.message.emit(f"图片都很干净：{report.summary()}")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "整理图片",
+            f"{report.summary()}\n\n要删掉这 {len(report.orphans)} 张没被引用的图片吗？\n"
+            "删除后不可恢复；记录里正在用的图不会动。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            result = maintenance_service.delete_orphans(
+                [item.relative_path for item in report.orphans]
+            )
+        except maintenance_service.MaintenanceFailed as exc:
+            get_logger("ui.library").warning("删除孤儿图片失败：%s", exc.detail)
+            self._show_error(exc.user_message)
+            return
+
+        self.message.emit(result.summary())
 
     # ------------------------------------------------------------- 提示
     def _show_error(self, text: str) -> None:

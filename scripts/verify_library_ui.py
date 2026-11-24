@@ -19,6 +19,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from PIL import Image
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -335,6 +336,43 @@ def main() -> int:
           f"{sum(widths)} vs {fresh.table.viewport().width()}")
     fresh.close()
     fresh.deleteLater()
+
+    # ---------------------------------------------------------------- 12
+    print("\n== 12. 整理图片（孤儿清理）==")
+    from app.services import maintenance_service
+
+    orphan_dir = config.UPLOAD_DIR / "2026-10-20"
+    orphan_dir.mkdir(parents=True, exist_ok=True)
+    orphan_file = orphan_dir / "nobody-uses-this.jpg"
+    Image.new("RGB", (16, 12), (120, 60, 200)).save(orphan_file, "JPEG")
+
+    before = maintenance_service.scan()
+    check("扫描能看见这张没被引用的图",
+          any(item.relative_path == "2026-10-20/nobody-uses-this.jpg" for item in before.orphans),
+          str([item.relative_path for item in before.orphans]))
+
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.No)  # type: ignore[assignment]
+    try:
+        page.cleanup_button.click()
+    finally:
+        QMessageBox.question = original_question  # type: ignore[assignment]
+    app.processEvents()
+    check("点「否」不删文件", orphan_file.is_file())
+
+    messages.clear()
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)  # type: ignore[assignment]
+    try:
+        page.cleanup_button.click()
+    finally:
+        QMessageBox.question = original_question  # type: ignore[assignment]
+    app.processEvents()
+    check("点「是」把孤儿图删掉", not orphan_file.exists())
+    check("状态栏报告删了几张", any("删掉" in text for text in messages), str(messages))
+
+    messages.clear()
+    page.cleanup_button.click()
+    app.processEvents()
+    check("再点一次发现已经干净了", any("干净" in text for text in messages), str(messages))
 
     print(f"\n===== 通过 {_passed} 项，失败 {_failed} 项 =====")
     if _failed == 0:

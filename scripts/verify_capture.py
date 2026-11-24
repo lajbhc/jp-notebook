@@ -80,13 +80,29 @@ def main() -> int:
     check("文件真的复制过去了", (UPLOAD_ROOT / relative).is_file(), relative)
     check("原图没被移动", source.is_file())
     check(
-        "文件名被随机化（不撞名）",
+        "文件名是内容哈希（不是原文件名）",
         parts[1] != "card.jpg",
         relative,
     )
 
     again = entry_service.store_image(source, root=UPLOAD_ROOT, today="2026-11-01")
-    check("同一张图存两次得到两个文件名", again != relative, f"{relative} vs {again}")
+    check("同一张图存两次得到同一个路径（去重）", again == relative, f"{relative} vs {again}")
+    check(
+        "磁盘上只有一份",
+        len(list((UPLOAD_ROOT / "2026-11-01").iterdir())) == 1,
+        str(sorted(p.name for p in (UPLOAD_ROOT / "2026-11-01").iterdir())),
+    )
+
+    next_day = entry_service.store_image(source, root=UPLOAD_ROOT, today="2026-11-02")
+    check("换一天再存也复用已有文件（跨目录去重）", next_day == relative, next_day)
+    check("没有为它新建日期目录", not (UPLOAD_ROOT / "2026-11-02").exists())
+
+    other_source = WORK_DIR / "src" / "card2.jpg"
+    Image.new("RGB", (30, 18), (10, 200, 10)).save(other_source, "JPEG")
+    other_relative = entry_service.store_image(
+        other_source, root=UPLOAD_ROOT, today="2026-11-01"
+    )
+    check("不同的图得到不同文件名", other_relative != relative, other_relative)
 
     png_source = WORK_DIR / "src" / "shot.png"
     Image.new("RGBA", (20, 20), (0, 0, 255, 128)).save(png_source, "PNG")

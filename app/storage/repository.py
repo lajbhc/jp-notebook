@@ -230,6 +230,18 @@ class EntryRepository:
             ).fetchone()
         return int(row["n"])
 
+    def used_images(self) -> set[str]:
+        """所有被记录引用过的图片相对路径（去重）。
+
+        给"清理孤儿图片"用：上传目录里不在这份清单里的，就是删记录时留下的图。
+        返回的是库里存的原样字符串（正斜杠相对路径），比较时由调用方统一大小写。
+        """
+        with connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT source_image FROM entries WHERE source_image <> ''"
+            ).fetchall()
+        return {row["source_image"] for row in rows}
+
     # ------------------------------------------------------------- 内部
     def _build_filters(
         self,

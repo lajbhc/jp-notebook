@@ -67,7 +67,10 @@
 
 ## 词库与数据
 
-- [ ] 孤儿图片清理：删记录时只删库行、保留原图（有意为之），需要一个"扫一遍没被引用的图"的工具
+- [x] 孤儿图片清理（2026-11-24 完成，并入方案 2）：删记录时只删库行、保留原图（有意为之），
+      词库页「整理图片」会扫出没被任何记录引用的图、内容完全重复的组，问过才删，
+      删之前重新查一遍引用。落点 `app/services/maintenance_service.py` + `library_page.py`；
+      验收 `verify_maintenance.py` 38 项、`verify_library_ui.py` 79 项、`tests/test_maintenance.py` 8 项
 - [ ] 导出 CSV / Anki（简历项目里常被问，但用户明确说先不做）
 
 ## 界面
@@ -98,6 +101,16 @@
   - 为什么不用 `shutil.copy2`：WAL 模式下最近的提交还在 `app.db-wal` 里，只复制 `.db` 会漏；
     改用 SQLite 的 backup API，`verify_backup.py` 里留了这条对照实验（备份 3 条 vs 复制 2 条）
   - 验收：`scripts/verify_backup.py` 36 项、`tests/test_backup.py` 8 项
+- [x] **方案 2 磁盘卫生**（2026-11-24 完成）
+  体检时 `data/uploads` 有 12 张图 32.1 MB、其中 7 张没有任何记录引用（16.1 MB）、
+  5 组内容完全重复。三件事：
+  - `entry_service.store_image()` 改成**内容寻址**：文件名取 sha1 前 16 位，
+    存之前先在 `uploads/*/` 里找同名同大小的文件，找到就复用（第二天再传同一张也不多存）。
+  - `app/services/maintenance_service.py`：`scan()` 算孤儿与重复组，`delete_orphans()`
+    删之前**重新查引用**（清单可能过期）、删完顺手去掉空日期目录；`_incoming/` 不算正式图片
+  - `upload_service.log_event()` 加 2 MB 轮转（`upload.log` → `upload.log.1`，只留一份）
+  - 验收：`scripts/verify_maintenance.py` 38 项、`tests/test_maintenance.py` 8 项、
+    `verify_capture.py` 45→49 项（去重与跨日复用）、`verify_library_ui.py` 74→79 项（清理按钮）
 - [x] GitHub 远程仓库 + push（2026-11-03 完成，https://github.com/lajbhc/jp-notebook）
   - 本机推送要设 `GIT_SSH=C:/Windows/System32/OpenSSH/ssh.exe` + `GIT_SSH_VARIANT=ssh`，
     Git 自带的 MSYS ssh 在这个环境里起不来（`couldn't create signal pipe`）

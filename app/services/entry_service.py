@@ -11,11 +11,11 @@ UI 只跟本模块打交道：不直接调 recognizer、不直接碰 repository�
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
 
@@ -118,17 +118,45 @@ def upload_root() -> Path:
     return config.UPLOAD_DIR
 
 
+def file_digest(path: Path) -> str:
+    """算文件内容的 sha1。用它当前 16 位十六进制做文件名，同一张图就只会存一份。"""
+    digest = hashlib.sha1()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(256 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _find_stored(root: Path, filename: str, size: int) -> str | None:
+    """在上传目录里找同名同大小的文件（同名 = 同内容），找到就返回相对路径。"""
+    try:
+        candidates = list(root.glob(f"*/{filename}"))
+    except OSError:
+        return None
+    for candidate in candidates:
+        try:
+            if candidate.stat().st_size == size:
+                return candidate.relative_to(root).as_posix()
+        except OSError:
+            continue
+    return None
+
+
 def store_image(
     source: str | Path,
     *,
     root: Path | None = None,
     today: str | None = None,
 ) -> str:
-    """把选中的图片复制进 data/uploads/<日期>/，返回相对路径（如 2026-11-01/ab12cd.jpg）。
+    """把选中的图片复制进 data/uploads/<日期>/，返回相对路径（如 2026-11-01/9f2c....jpg）。
 
     为什么复制而不是只记原路径：原图可能被删掉、被移动，或者在手机/相机目录里。
     复制进 data/ 之后这条记录就自包含了，翻看历史时不会出现"图片找不到"。
     数据库只存相对路径，换机器/换目录时不用改库。
+
+    文件名是**内容哈希**而不是随机数：同一张照片重复录入（先录一个词、再框另一块录
+    第二个词）只会落一份文件。找已有文件时会连以前的日期目录一起找，所以第二天再传
+    同一张图也不会多存一份；记录里各自指向自己的相对路径，删掉哪条记录都不影响另一条。
     """
     path = Path(source)
     if not path.is_file():
@@ -161,10 +189,23 @@ def store_image(
         )
 
     day = today or date.today().isoformat()
-    folder = (root or upload_root()) / day
-    folder.mkdir(parents=True, exist_ok=True)
+    base = root or upload_root()
+    folder = base / day
 
-    filename = f"{uuid4().hex[:12]}{suffix}"
+    try:
+        size = path.stat().st_size
+        filename = f"{file_digest(path)[:16]}{suffix}"
+    except OSError as exc:
+        raise ImageInvalid(
+            f"cannot read {path}: {exc}",
+            "这张图片读不出来，请换一张试试。",
+        ) from exc
+
+    existing = _find_stored(base, filename, size)
+    if existing is not None:
+        return existing
+
+    folder.mkdir(parents=True, exist_ok=True)
     try:
         shutil.copy2(path, folder / filename)
     except OSError as exc:

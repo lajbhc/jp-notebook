@@ -106,6 +106,41 @@ def test_second_entry_can_reuse_stored_image(repo, upload_dir, sample_image) -> 
     assert len(list(upload_dir.rglob("*.png"))) == copied
 
 
+def test_store_image_dedupes_identical_content(
+    repo, upload_dir, sample_image
+) -> None:
+    """同一张图存两次只落一份：文件名是内容哈希。"""
+    first = entry_service.store_image(sample_image, root=upload_dir, today="2026-11-01")
+    second = entry_service.store_image(sample_image, root=upload_dir, today="2026-11-01")
+
+    assert first == second
+    assert len(list(upload_dir.rglob("*.png"))) == 1
+    assert first.split("/")[1] != sample_image.name  # 不是原文件名
+
+
+def test_store_image_dedupes_across_days(upload_dir, sample_image) -> None:
+    """第二天再传同一张图，直接复用已有文件，不再新建日期目录。"""
+    first = entry_service.store_image(sample_image, root=upload_dir, today="2026-11-01")
+    second = entry_service.store_image(sample_image, root=upload_dir, today="2026-11-02")
+
+    assert first == second
+    assert not (upload_dir / "2026-11-02").exists()
+    assert len(list(upload_dir.rglob("*.png"))) == 1
+
+
+def test_store_image_keeps_different_images_apart(upload_dir, sandbox: Path) -> None:
+    one = sandbox / "one.png"
+    two = sandbox / "two.png"
+    Image.new("RGB", (12, 12), (255, 0, 0)).save(one, "PNG")
+    Image.new("RGB", (12, 12), (0, 255, 0)).save(two, "PNG")
+
+    first = entry_service.store_image(one, root=upload_dir, today="2026-11-01")
+    second = entry_service.store_image(two, root=upload_dir, today="2026-11-01")
+
+    assert first != second
+    assert len(list(upload_dir.rglob("*.png"))) == 2
+
+
 def test_store_image_rejects_missing_file(upload_dir, sandbox: Path) -> None:
     with pytest.raises(ImageInvalid) as excinfo:
         entry_service.store_image(sandbox / "nope.jpg")

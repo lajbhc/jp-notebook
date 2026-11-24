@@ -48,6 +48,7 @@ jp-notebook/
       reminder_service.py # 提醒判定：到点没有、今天提醒过没有、延后到几点
       recognizer.py       # 多模态识别（只抄图上有的）
       enricher.py         # 补全：把空着的释义/读音/例句补齐，并做本地检查
+      maintenance_service.py # 整理图片：谁没被引用、谁重复、清孤儿
       errors.py           # 统一错误模型
     storage/     # SQLite 读写封装（db.py 建表与迁移，repository.py 增删改查，backup.py 备份）
     prompts/     # 提示词模板（recognize.py 照抄、enrich.py 补全）
@@ -336,6 +337,7 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 八个阶段之后做的加固（体检发现的问题，按优先级处理）：
 
 1. 数据安全网：启动查完整性、每天一份备份、升级表结构前备份（`app/storage/backup.py`，见下面那节）
+2. 磁盘卫生：图片按内容寻址去重、词库页「整理图片」清孤儿、上传日志轮转（`app/services/maintenance_service.py`）
 
 ## 识别之后自动补全
 
@@ -397,6 +399,7 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 .\venv\Scripts\python.exe scripts\verify_crop_ui.py       # 框选：offscreen 模拟拖鼠标，验 letterbox 映射
 .\venv\Scripts\python.exe scripts\verify_enrich.py        # 补全：本地检查 + 假接口的各种失败分支
 .\venv\Scripts\python.exe scripts\verify_backup.py        # 数据安全：每日备份、迁移前备份、WAL、完整性
+.\venv\Scripts\python.exe scripts\verify_maintenance.py   # 图片整理：孤儿扫描、重复分组、安全删除、日志轮转
 ```
 
 最后那条是给手机上传页里那段 JS 用的：它只在手机浏览器里执行，Python 的测试看不见它。
@@ -418,6 +421,30 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 - 备份用的是 SQLite 自己的 backup API，不是复制文件。开着 WAL 的时候，最近的提交还躺在 `app.db-wal` 里，
   `shutil.copy2` 只复制 `.db` 会漏掉它（`verify_backup.py` 里专门做了这个对照实验：备份 3 条、复制只有 2 条）。
 - 库文件不存在时不会造空备份；同一天启动多次也只会有一份。
+
+## 图片放哪、重复了怎么办
+
+原图都进 `data/uploads/<日期>/`，库里的记录只存相对路径。文件名不是随机数，而是**内容哈希**
+（sha1 前 16 位），所以同一张照片反复录入只会落一份文件：
+
+- 先录一个词、再在同一个页面框另一块录第二个词 → 第二条记录指回同一个文件，不复制
+- 第二天又传了同一张 → 直接复用前一天的路径，不新建日期目录
+- 所以删记录时不用想"图会不会被别人用着"：只要还有记录指着，图就在；全删了才可能变成孤儿
+
+删记录时故意**不删原图**（你可能只是想重录）。这些图会攒在 `data/uploads/` 里，点词库页的
+「整理图片」可以看看账：
+
+| 它会告诉你 | 它会做什么 |
+|---|---|
+| 一共多少张、占多大 | 什么都不做，只弹一句汇总 |
+| 哪些没被任何记录引用（孤儿） | 问过你之后才删；**删之前重新查一次数据库**，期间又录了一条引用它的记录就不会删 |
+| 哪些内容完全重复（多占多少） | 只报告，不自动动；孤儿那份通常顺手就能清掉 |
+
+删除会顺手去掉空掉的日期目录；单张删不掉（被别的程序打开着）不影响其它张。
+`data/uploads/_incoming/` 是手机上传的临时中转，不算正式图片，扫描时跳过。
+
+手机上传的流水账 `data/logs/upload.log` 超过 2 MB 会改名成 `upload.log.1`（只留一份）——
+这份日志是排查"手机上点了上传、电脑没收到"的唯一线索，不能让它无限长大。
 
 ## 出错了看哪里
 

@@ -165,9 +165,25 @@ def _clean_name(name: str) -> str:
 
 
 # --------------------------------------------------------------- 日志
+UPLOAD_LOG_MAX_BYTES = 2 * 1024 * 1024
+
+
 def log_path() -> Path:
     """手机上传的流水账：data/logs/upload.log。"""
     return config.LOG_DIR / "upload.log"
+
+
+def _rotate_log(path: Path) -> None:
+    """超过 2MB 就把旧日志改名成 upload.log.1（只留一份）。
+
+    这份日志是排查"手机上点了上传、电脑没收到"的唯一线索，所以不能因为
+    懒得管就涨到几十 MB；但也不需要留很多历史，一份旧的够对照了。
+    """
+    try:
+        if path.exists() and path.stat().st_size > UPLOAD_LOG_MAX_BYTES:
+            path.replace(path.with_name(path.name + ".1"))
+    except OSError:
+        pass
 
 
 def log_event(text: str) -> None:
@@ -180,7 +196,9 @@ def log_event(text: str) -> None:
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     try:
         config.LOG_DIR.mkdir(parents=True, exist_ok=True)
-        with log_path().open("a", encoding="utf-8") as fp:
+        path = log_path()
+        _rotate_log(path)
+        with path.open("a", encoding="utf-8") as fp:
             fp.write(f"{stamp} {text}\n")
     except OSError:
         pass
