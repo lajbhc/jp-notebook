@@ -49,7 +49,7 @@ jp-notebook/
       recognizer.py       # 多模态识别（只抄图上有的）
       enricher.py         # 补全：把空着的释义/读音/例句补齐，并做本地检查
       errors.py           # 统一错误模型
-    storage/     # SQLite 读写封装（db.py 建表，repository.py 增删改查）
+    storage/     # SQLite 读写封装（db.py 建表与迁移，repository.py 增删改查，backup.py 备份）
     prompts/     # 提示词模板（recognize.py 照抄、enrich.py 补全）
     models.py    # 数据模型 Entry（生词与语法共用）
     config.py    # 路径、环境变量、模型名
@@ -333,6 +333,10 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 3. 词库 + 打卡：列宽可拖且记得住；打卡页改成左日历右操作，下面不再空一大片
 4. 上传页：等宽字体显示地址、按钮加高、统一 16px 边距，各 UI 脚本补几何断言
 
+八个阶段之后做的加固（体检发现的问题，按优先级处理）：
+
+1. 数据安全网：启动查完整性、每天一份备份、升级表结构前备份（`app/storage/backup.py`，见下面那节）
+
 ## 识别之后自动补全
 
 学生拍的往往只是题册上的一个生词或一条语法，光有词本身没法复习。所以识别之后
@@ -392,10 +396,28 @@ Windows 防火墙有没有拦 Python（第一次启动会弹窗，选「允许�
 .\venv\Scripts\python.exe scripts\verify_crop.py          # 框选：裁出来的像素跟框的位置对得上
 .\venv\Scripts\python.exe scripts\verify_crop_ui.py       # 框选：offscreen 模拟拖鼠标，验 letterbox 映射
 .\venv\Scripts\python.exe scripts\verify_enrich.py        # 补全：本地检查 + 假接口的各种失败分支
+.\venv\Scripts\python.exe scripts\verify_backup.py        # 数据安全：每日备份、迁移前备份、WAL、完整性
 ```
 
 最后那条是给手机上传页里那段 JS 用的：它只在手机浏览器里执行，Python 的测试看不见它。
 没装 Node 会自动跳过，不影响其它验收。
+
+## 数据安全：备份与完整性
+
+`data/app.db` 是这台机器上**唯一不可再生**的东西（原图还在 `data/uploads/`，但抄好的字段只在这里），
+所以启动时会先给它上三道保险，失败只记日志、绝不拦着程序起来：
+
+| 什么时候 | 做了什么 | 留在哪 |
+|---|---|---|
+| 每次启动 | `PRAGMA integrity_check`，坏了就在日志里说话 | `data/logs/app.log` |
+| 每天第一次启动 | 备份一份当天快照，只留最近 7 份 | `data/backups/app-daily-YYYY-MM-DD.db` |
+| 升级表结构之前 | 先把**旧结构**的库备份一份，只留最近 5 份 | `data/backups/app-before-migrate-v1-to-v2-*.db` |
+
+两个细节值得记一下：
+
+- 备份用的是 SQLite 自己的 backup API，不是复制文件。开着 WAL 的时候，最近的提交还躺在 `app.db-wal` 里，
+  `shutil.copy2` 只复制 `.db` 会漏掉它（`verify_backup.py` 里专门做了这个对照实验：备份 3 条、复制只有 2 条）。
+- 库文件不存在时不会造空备份；同一天启动多次也只会有一份。
 
 ## 出错了看哪里
 

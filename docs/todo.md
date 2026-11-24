@@ -4,7 +4,7 @@
 
 ## 识别
 
-- [ ] **识别后自动补全**（用户 2026-11-20 提出，方案已定，做到第 1 步）
+- [x] **识别后自动补全**（用户 2026-11-20 提出，五步已于当天全部完成）
   学生拍的只是题册上的一个词/一条语法，光有词没法复习。识别只抄图上有的，
   另起一步纯文本调用把空字段补上：读音 / 释义 / 词性 / 接续 / 例句 / 例句翻译。
   - 原则：只补空字段（已有内容一个字不动）；补完把字段名记进 `generated_fields`；
@@ -84,11 +84,20 @@
     （含列宽记忆 6 项）、`verify_checkin_ui.py` 57 项（含两栏排版 5 项）、`verify_upload_ui.py` 39 项
 - [x] 词库表格列宽记忆（并入上面的第 3 步；`ui.json` 里 `library_columns`）
 - [ ] 词库双击列头自适应宽度
-- [ ] 录入页识别后高亮"哪些字段是模型填的、哪些是空的"，方便人工校正
-      —— 这件事已经并入上面「识别后自动补全」的第 4 步（浅蓝底 +「AI 补」小标）
+- [x] 录入页识别后高亮"哪些字段是模型填的、哪些是空的"，方便人工校正
+      —— 已并入上面「识别后自动补全」的第 4 步（浅蓝底 +「AI 补」小标）
 
 ## 工程
 
+- [x] **方案 1 数据安全网**（2026-11-24 完成）
+  库是这台机器上唯一不可再生的东西，所以启动时先上三道保险：`PRAGMA integrity_check`、
+  每天一份快照（留 7 份）、升级表结构前备份旧结构（留 5 份）。
+  - 落点：`app/storage/backup.py`（`daily_backup` / `backup_before_migrate` / `prune_backups` /
+    `integrity_check` / `startup_prepare`），接进 `db.init_db()`（迁移前）与 `main.main()`（启动时）；
+    备份目录跟着库走（`data/backups/`），所以校验脚本用临时库时不会污染真实数据
+  - 为什么不用 `shutil.copy2`：WAL 模式下最近的提交还在 `app.db-wal` 里，只复制 `.db` 会漏；
+    改用 SQLite 的 backup API，`verify_backup.py` 里留了这条对照实验（备份 3 条 vs 复制 2 条）
+  - 验收：`scripts/verify_backup.py` 36 项、`tests/test_backup.py` 8 项
 - [x] GitHub 远程仓库 + push（2026-11-03 完成，https://github.com/lajbhc/jp-notebook）
   - 本机推送要设 `GIT_SSH=C:/Windows/System32/OpenSSH/ssh.exe` + `GIT_SSH_VARIANT=ssh`，
     Git 自带的 MSYS ssh 在这个环境里起不来（`couldn't create signal pipe`）

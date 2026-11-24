@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from app import config
 from app.logger import get_logger, log_exception, setup_logging
 from app.services import checkin_service, reminder_service, upload_service
+from app.storage import backup
 from app.storage.db import StorageError, init_db
 from app.ui import tray as tray_module
 from app.ui.main_window import WINDOW_TITLE, MainWindow
@@ -178,6 +179,9 @@ def main() -> int:
     config.ensure_dirs()
     setup_logging()
     log.info("启动：数据库 %s", config.DB_PATH)
+
+    # 先给"不可再生的东西"上保险：完整性检查 + 每天一份快照（失败只记日志，不拦启动）
+    log.info("%s", backup.startup_prepare())
 
     app = QApplication(sys.argv)
     app.setApplicationName(WINDOW_TITLE)

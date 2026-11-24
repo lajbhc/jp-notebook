@@ -3,12 +3,16 @@
 运行：
     .\\venv\\Scripts\\python.exe scripts\\verify_storage.py
 
-脚本使用独立的临时库 data/_verify.db（跑完删除），最后会顺带把正式库
-data/app.db 建好，方便你确认文件确实生成了。
+脚本使用独立的临时库 data/_verify_storage/app.db（跑完整个目录删掉）。放在子目录里
+是有意的：备份落在"库文件旁边的 backups/"，如果直接用 data/_verify.db，迁移测试
+就会往真实的 data/backups 里塞文件、还会挤掉保留份数。
+
+最后会顺带把正式库 data/app.db 建好，方便你确认文件确实生成了。
 """
 
 from __future__ import annotations
 
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -19,7 +23,8 @@ from app import config, models
 from app.storage import db
 from app.storage.repository import EntryNotFound, EntryRepository
 
-VERIFY_DB = config.DATA_DIR / "_verify.db"
+VERIFY_DIR = config.DATA_DIR / "_verify_storage"
+VERIFY_DB = VERIFY_DIR / "app.db"
 
 _passed = 0
 _failed = 0
@@ -54,6 +59,7 @@ def _columns(db_path: Path) -> set[str]:
 
 def main() -> int:
     print(f"临时库路径: {VERIFY_DB}")
+    VERIFY_DIR.mkdir(parents=True, exist_ok=True)
 
     # ---------------------------------------------------------------- 1
     print("\n== 1. 建库与建表 ==")
@@ -258,8 +264,7 @@ def main() -> int:
     print(f"  正式库记录数: {EntryRepository().count()}")
 
     # ---------------------------------------------------------------- 收尾
-    for path in (VERIFY_DB, Path(f"{VERIFY_DB}-wal"), Path(f"{VERIFY_DB}-shm")):
-        path.unlink(missing_ok=True)
+    shutil.rmtree(VERIFY_DIR, ignore_errors=True)
 
     print(f"\n===== 通过 {_passed} 项，失败 {_failed} 项 =====")
     if _failed:

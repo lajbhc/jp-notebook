@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from app import config
+from app.storage import backup
 
 # 表结构版本。将来加字段/加表时 +1，并在下面补一条迁移分支（见 _MIGRATIONS）。
 # v1 → v2：entries 加 generated_fields（记录哪些字段是 AI 补的）
@@ -116,8 +117,14 @@ def init_db(db_path: str | Path | None = None) -> None:
 
     升级策略：能就地迁移的就迁移（`ALTER TABLE ADD COLUMN` 不重建表、不丢数据），
     迁移不了的（版本比程序还新）一律报错退出，绝不猜着改用户的库。
+    真要改结构之前先留一份备份（`app/storage/backup.py`），出事能原样退回去。
     """
-    with connect(db_path) as conn:
+    path = resolve_db_path(db_path)
+    previous = _peek_schema_version(path)
+    if previous is not None and previous < SCHEMA_VERSION:
+        backup.backup_before_migrate(previous, SCHEMA_VERSION, db_path=path)
+
+    with connect(path) as conn:
         conn.executescript(_SCHEMA_SQL)
 
         # WAL 让"桌面端读"和"局域网服务写"同时进行时少一些锁冲突。
@@ -133,10 +140,32 @@ def init_db(db_path: str | Path | None = None) -> None:
         if current > SCHEMA_VERSION:
             raise SchemaVersionError(
                 f"数据库表结构版本为 {current}，但本程序只支持到 {SCHEMA_VERSION}。"
-                f"请升级程序，或备份后删除 {resolve_db_path(db_path)} 重新开始。"
+                f"请升级程序，或备份后删除 {path} 重新开始。"
             )
         if current < SCHEMA_VERSION:
             _migrate(conn, current)
+
+
+def _peek_schema_version(path: Path) -> int | None:
+    """单独开一个连接看一眼版本，只为"迁移前先备份"。
+
+    库不存在返回 None（全新安装，没什么可备份的）。
+    """
+    if not path.exists():
+        return None
+    try:
+        with closing(sqlite3.connect(str(path), timeout=5.0)) as conn:
+            row = conn.execute(
+                "SELECT value FROM meta WHERE key = ?", (META_SCHEMA_VERSION_KEY,)
+            ).fetchone()
+    except sqlite3.Error as exc:
+        raise StorageError(f"数据库文件打不开 {path}: {exc}") from exc
+    if row is None:
+        return None
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return None
 
 
 def _migrate(conn: sqlite3.Connection, current: int) -> None:
